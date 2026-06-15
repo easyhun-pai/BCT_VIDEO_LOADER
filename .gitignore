@@ -1,0 +1,27 @@
+# ── 민감정보 (절대 커밋 금지) ─────────────────────────────
+CREDENTIALS.local.md
+config/secrets.local.json
+*.local.json
+*.local.md
+
+# SSH 키
+*.pem
+*.key
+id_*
+bct_edge*
+
+# ── 수집 데이터 / 로그 ────────────────────────────────────
+data/
+logs/
+*.mp4
+*.avi
+*.mkv
+
+# 다운로드한 외부 도구(plink 등)
+tools/
+
+# ── 기타 ─────────────────────────────────────────────────
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db

@@ -1,0 +1,37 @@
+{
+  "ssh": {
+    "_note": "user/password 는 secrets.local.json 에서 주입(여긴 비워둠).",
+    "user": "",
+    "port": 22,
+    "keyPath": "~/.ssh/bct_edge",
+    "password": "",
+    "connectTimeoutSec": 8,
+    "strictHostKeyChecking": "accept-new"
+  },
+
+  "transfer": {
+    "remoteBaseDir": "/home/paimedialab/mithril_ai_server/results",
+    "localBaseDir": "../data",
+    "filePatterns": ["*.mp4", "*.jpg", "*.json"],
+    "excludeDirs": ["raw"],
+    "sinceDays": 0,
+    "purgeRemoteAfterPull": false
+  },
+
+  "trigger": {
+    "_comment": "telegramBotToken 은 secrets.local.json 에서 주입됩니다.",
+    "telegramBotToken": "",
+    "allowedChatIds": [],
+    "bctRegex": "BCT\\s*0*([0-9]{1,2})",
+    "pollTimeoutSec": 50
+  },
+
+  "nodes": [
+    { "name": "edge-node1", "ip": "10.113.93.74",  "lanIp": "172.81.161.146", "bcts": ["BCT13"] },
+    { "name": "edge-node2", "ip": "10.113.93.152", "lanIp": "172.81.161.143", "bcts": ["BCT11", "BCT12"] },
+    { "name": "edge-node3", "ip": "10.113.93.33",  "lanIp": "172.81.161.144", "bcts": ["BCT9", "BCT10"] },
+    { "name": "edge-node4", "ip": "10.113.93.34",  "lanIp": "172.81.161.145", "bcts": ["BCT7", "BCT8"] },
+    { "name": "edge-node5", "ip": "10.113.93.180", "lanIp": "172.81.161.148", "bcts": ["BCT5", "BCT6"] },
+    { "name": "edge-node6", "ip": "10.113.93.53",  "lanIp": "172.81.161.147", "bcts": ["BCT4"] }
+  ]
+}
