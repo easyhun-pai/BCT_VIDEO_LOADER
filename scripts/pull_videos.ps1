@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     BCT 엣지노드(6대)에 저장된 트리거 영상/결과 파일을 내 PC로 증분(incremental) 수집한다.
 
@@ -14,6 +14,12 @@
 
 .PARAMETER SinceDays
     최근 N일 이내 수정된 파일만 수집(0 = 전체). config 값을 덮어씀.
+    -Date 를 함께 쓰면 무시된다.
+
+.PARAMETER Date
+    특정 날짜만 수집. yyyy-MM-dd 형식, 여러 개 지정 가능.
+    원격이 remoteBaseDir/<yyyy-MM-dd>/... 로 날짜 분할돼 있는 것을 이용하므로
+    -SinceDays(=find -mtime, "최근 N일")와 달리 날짜를 정확히 집어낸다.
 
 .PARAMETER DryRun
     실제 다운로드 없이 받을 파일만 출력.
@@ -24,15 +30,18 @@
 .EXAMPLE
     .\pull_videos.ps1
     .\pull_videos.ps1 -Node edge-node5 -SinceDays 1
+    .\pull_videos.ps1 -Date 2026-07-22
+    .\pull_videos.ps1 -Date 2026-07-22,2026-07-23 -Node edge-node5
     .\pull_videos.ps1 -DryRun
 #>
 
 [CmdletBinding()]
 param(
-    [string] $Node,
-    [int]    $SinceDays = -1,
-    [switch] $DryRun,
-    [switch] $PurgeRemote
+    [string]   $Node,
+    [int]      $SinceDays = -1,
+    [string[]] $Date,
+    [switch]   $DryRun,
+    [switch]   $PurgeRemote
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,7 +107,19 @@ $scpOpts = @('-P', "$sshPort") + $commonOpts   # scp 용(포트는 대문자 -P)
 
 # 원격 find 의 -name 패턴식 구성:  \( -name '*.mp4' -o -name '*.jpg' ... \)
 $nameExpr = ($patterns | ForEach-Object { "-name '$_'" }) -join ' -o '
-$timeExpr = if ($since -gt 0) { "-mtime -$since" } else { '' }
+
+# 날짜 지정(-Date): 원격은 remoteBase/<yyyy-MM-dd>/... 로 분할돼 있으므로 경로로 직접 좁힌다.
+#   \( -path '<base>/2026-07-22/*' -o -path '<base>/2026-07-23/*' \)
+# -mtime 기반인 -SinceDays 와 달리 해당 날짜만 정확히 걸린다(둘을 같이 쓰면 -Date 우선).
+$dateExpr = ''
+if ($Date) {
+    $bad = @($Date | Where-Object { $_ -notmatch '^\d{4}-\d{2}-\d{2}$' })
+    if ($bad) { throw "-Date 형식은 yyyy-MM-dd 입니다: $($bad -join ', ')" }
+    $dateExpr = '\( ' + (($Date | ForEach-Object { "-path '$remoteBase/$_/*'" }) -join ' -o ') + ' \)'
+}
+
+$timeExpr = if ($Date) { '' } elseif ($since -gt 0) { "-mtime -$since" } else { '' }
+if ($Date -and $since -gt 0) { Log "-Date 지정됨 → SinceDays($since) 는 무시합니다." 'WARN' }
 # 제외 디렉터리(예: raw 프레임 — 대용량):  -not -path '*/raw/*'
 $excludeExpr = ''
 if ($cfg.transfer.excludeDirs) {
@@ -110,7 +131,13 @@ $targets = if ($Node) { $cfg.nodes | Where-Object { $_.name -eq $Node } } else {
 if (-not $targets) { throw "노드를 찾을 수 없음: $Node" }
 
 $grandTotal = [ordered]@{ downloaded = 0; skipped = 0; failed = 0 }
-Log ("==== BCT 영상 수집 시작 (대상 {0}개 노드, since={1}일, dryrun={2}) ====" -f @($targets).Count, $since, $DryRun)
+$scopeDesc = if ($Date) { "date=$($Date -join ',')" } else { "since=${since}일" }
+Log ("==== BCT 영상 수집 시작 (대상 {0}개 노드, {1}, dryrun={2}) ====" -f @($targets).Count, $scopeDesc, $DryRun)
+
+# 여기부터는 노드별 실패를 $LASTEXITCODE 로 직접 처리한다.
+# 'Stop' 인 채로 두면 ssh 가 stderr 에 한 줄만 뱉어도(예: 노드 다운) NativeCommandError 로
+# 스크립트 전체가 중단돼서, 아래 "SSH 접속 실패 → 건너뜀" 처리에 도달하지 못한다.
+$ErrorActionPreference = 'Continue'
 
 foreach ($n in $targets) {
     $target = "$sshUser@$($n.ip)"
@@ -126,7 +153,7 @@ foreach ($n in $targets) {
     }
 
     # 2) 원격 파일 목록 수집 (널 구분자로 안전하게)
-    $findCmd = "find '$remoteBase' -type f \( $nameExpr \) $excludeExpr $timeExpr -printf '%P\n' 2>/dev/null"
+    $findCmd = "find '$remoteBase' -type f \( $nameExpr \) $dateExpr $excludeExpr $timeExpr -printf '%P\n' 2>/dev/null"
     $remoteFiles = & ssh @sshOpts $target $findCmd
     if ($LASTEXITCODE -ne 0) { Log "원격 목록 조회 실패 → 건너뜀" 'ERROR'; $grandTotal.failed++; continue }
     $remoteFiles = $remoteFiles | Where-Object { $_ -and $_.Trim() -ne '' }
@@ -145,8 +172,8 @@ foreach ($n in $targets) {
     }
     $already = $remoteFiles.Count - $missing.Count
     $grandTotal.skipped += $already
-    if (-not $missing) { Log "신규 없음 (보유 $already개)."; continue }
-    Log "신규 $($missing.Count)개 다운로드 (보유 $already개 건너뜀)..."
+    if (-not $missing) { Log "신규 없음 (보유 ${already}개)."; continue }
+    Log "신규 $($missing.Count)개 다운로드 (보유 ${already}개 건너뜀)..."
 
     if ($DryRun) {
         $missing | ForEach-Object { Log "  [DRY] $($n.name)/$_" }
@@ -175,7 +202,7 @@ foreach ($n in $targets) {
             $rmCmd = "cd '$remoteBase' && tr '\n' '\0' | xargs -0 rm -f"
             $sshRm = $sshOpts + @($target, $rmCmd)
             Start-Process -FilePath 'ssh' -ArgumentList $sshRm -RedirectStandardInput $listFile -NoNewWindow -Wait | Out-Null
-            Log "    (원격 $got개 삭제 시도)"
+            Log "    (원격 ${got}개 삭제 시도)"
         }
     } else {
         Log "  ✗ tar 스트림 실패(빈 출력) — 키/경로 확인" 'ERROR'

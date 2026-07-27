@@ -52,15 +52,27 @@ ZeroTier로는 닿지 않는다. 영상은 카메라가 아니라 엣지노드 �
 
 ```powershell
 cd scripts
-.\pull_videos.ps1                  # 전체 노드, 증분
-.\pull_videos.ps1 -Node edge-node5 # 특정 노드
-.\pull_videos.ps1 -SinceDays 1     # 최근 1일
-.\pull_videos.ps1 -DryRun          # 받을 파일만 미리보기
-.\pull_videos.ps1 -PurgeRemote     # 받은 뒤 원격에서 삭제
+.\pull_videos.ps1                        # 전체 노드, 증분
+.\pull_videos.ps1 -Node edge-node5       # 특정 노드
+.\pull_videos.ps1 -SinceDays 1           # 최근 1일
+.\pull_videos.ps1 -Date 2026-07-22       # 특정 날짜만
+.\pull_videos.ps1 -Date 2026-07-22,2026-07-23   # 여러 날짜
+.\pull_videos.ps1 -DryRun                # 받을 파일만 미리보기
+.\pull_videos.ps1 -PurgeRemote           # 받은 뒤 원격에서 삭제
 ```
 
 각 노드에 한 번 접속해 대상 파일 목록을 받고, **로컬에 없는 것만** ssh+tar 스트림으로
 가져온다(매번 전체 재다운로드 안 함). 저장 위치는 `data/<노드>/<날짜>/<gate>_<시각>/`.
+
+### `-SinceDays` vs `-Date`
+
+- `-SinceDays N` — `find -mtime` 기반. "최근 N일"이라 **특정 하루만 집어낼 수 없다**.
+  5일 전 것만 필요해도 그 사이 날짜가 전부 딸려온다.
+- `-Date yyyy-MM-dd` — 원격이 `remoteBaseDir/<날짜>/<gate>_<시각>/` 로 날짜 분할돼 있는
+  것을 경로로 직접 좁힌다. 지난 날짜를 정확히 다시 받을 때 이걸 쓴다. 쉼표로 여러 날짜 지정 가능.
+- 둘을 같이 주면 `-Date` 가 이기고 `-SinceDays` 는 무시된다(WARN 로그).
+
+노드가 죽어 있으면 해당 노드만 `SSH 접속 실패 → 건너뜀` 으로 기록하고 나머지는 계속 받는다.
 
 WSL/Git Bash라면 rsync 버전:
 
