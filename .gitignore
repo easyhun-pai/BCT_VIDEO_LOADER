@@ -25,3 +25,6 @@ __pycache__/
 *.pyc
 .DS_Store
 Thumbs.db
+
+# python venv
+.venv/

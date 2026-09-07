@@ -1,0 +1,61 @@
+{
+  "_note": "현장 목록. 자격(MinIO 키·Influx 토큰)은 secrets.local.json 의 sites.<code> 에 둔다. 현장 추가 = 여기 한 항목 + secrets 한 항목. 현장 방문·현장 변경 없음.",
+  "nas_root": "\\\\192.168.33.22\\bct-review",
+  "local_fallback": "../data/review",
+  "timezone": "+09:00",
+  "sites": [
+    {
+      "code": "HANIL",
+      "name": "한일시멘트 영월",
+      "cameras": [
+        "hook",
+        "ppe"
+      ],
+      "access": "tunnel",
+      "_access_note": "direct = server.zerotier_ip 로 :9000/:8086 직접. tunnel = 엣지노드 SSH 포트포워딩으로 LAN IP 우회. 현장서버 ZeroTier IP 확인되면 direct 로 전환.",
+      "server": {
+        "lan_ip": "172.81.161.149",
+        "zerotier_ip": "",
+        "minio_port": 9000,
+        "influx_port": 8086
+      },
+      "tunnel": {
+        "jump_host": "10.113.93.152",
+        "ssh_user": "paimedialab",
+        "ssh_key": "~/.ssh/bct_edge",
+        "ssh_port": 22,
+        "local_minio_port": 19000,
+        "local_influx_port": 18086
+      },
+      "minio": {
+        "bucket": "bct-clips",
+        "secure": false,
+        "tg_prefix": "_tg/"
+      },
+      "influx": {
+        "org": "mithril",
+        "bucket": "gate_events",
+        "measurement": "gate_event",
+        "join_tolerance_sec": 90
+      },
+      "thresholds": {
+        "_note": "사유(reasons)는 Influx 에 없어 점수와 임계값으로 유도한다. 엣지 decision_engine 값과 맞출 것.",
+        "hook_score": 0.5,
+        "helmet_score": 0.45,
+        "harness_score": 0.5
+      },
+      "bcts": {
+        "bct4": "edge-node6/gate1",
+        "bct5": "edge-node5/gate1",
+        "bct6": "edge-node5/gate2",
+        "bct7": "edge-node4/gate1",
+        "bct8": "edge-node4/gate2",
+        "bct9": "edge-node3/gate1",
+        "bct10": "edge-node3/gate2",
+        "bct11": "edge-node2/gate1",
+        "bct12": "edge-node2/gate2",
+        "bct13": "edge-node1/gate1"
+      }
+    }
+  ]
+}

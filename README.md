@@ -16,6 +16,9 @@ scripts/
   pull_videos.sh        rsync 버전 (WSL/Git Bash/Linux)
   find_storage.ps1      저장 경로 추적
   trigger_listener.py   텔레그램 트리거 연동
+  review.bat            오탐 검수 세션 CLI 실행기
+review/                 오탐 검수 세션 CLI (P0: 현장 MinIO·Influx 읽기·다운로드)
+config/sites.json       검수 대상 현장 목록
 data/                   수집 결과 (gitignore)
 logs/                   실행 로그 (gitignore)
 ```
@@ -118,3 +121,29 @@ BCT→노드 매핑은 노드별 `bcts` 에서 자동 생성된다. 상시 실�
 schtasks /create /tn BCT_Pull /sc minute /mo 10 ^
   /tr "powershell -ExecutionPolicy Bypass -File C:\...\scripts\pull_videos.ps1"
 ```
+
+## 오탐 검수 세션 CLI (`review/`, P0)
+
+현장 코드를 건드리지 않고 **현장 서버 MinIO·InfluxDB를 읽기만** 해서 이벤트를 나열·필터·다운로드한다.
+설계는 `data/_design/fp-review-session/` (설계 v2). 검수자 PC에서 실행하는 클라이언트이고 상시 서버는 없다.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\pip install -r requirements.txt
+# 현장 자격: config/secrets.local.json 의 sites.<code> (secrets.example.json 참고)
+
+scripts\review sites                                   # 등록된 현장, 저장 루트
+scripts\review days HANIL --month 2026-09              # MinIO 에 데이터 있는 날짜·건수
+scripts\review check-influx HANIL 2026-09-07           # Influx 필드·조인율·시각차 검증
+scripts\review list HANIL 2026-09-07 --verdict denied --from 09:00 --to 12:00 --reason 안전고리
+scripts\review resolve HANIL memo.txt --out ids.txt    # 텔레그램 메모(HHMM BCT) → 이벤트 ID
+scripts\review fetch HANIL --ids-file ids.txt --tg     # 클립 다운로드 (--tg: 박스 영상도)
+scripts\review fetch HANIL 2026-09-07 --verdict denied --bct 7 --dry-run
+```
+
+- **이벤트 ID** `{SITE}-{bct}-{yyyymmdd_HHMMSS}` = MinIO 키 `{bct}/{ts}/`. hook/ppe 는 스트림.
+- **접근** `sites.json` 의 `access`: `direct`(현장서버 ZeroTier IP) 또는 `tunnel`(엣지노드 SSH 포트포워딩으로 LAN IP 우회). 둘 다 읽기 전용.
+- **판정·점수** Influx `gate_event` (`allowed`, `hook/helmet/harness_score`). 사유는 Influx 에 없어 `thresholds` 로 유도 (엣지 `decision_engine` 과 동일 규칙).
+- **저장** `--out` > NAS `\192.168.33.22\bct-review`(접근 가능할 때) > `data/review/` 순. 경로 `{site}/{yyyy-mm-dd}/{event_id}/{hook,ppe}.mp4` + `fetch.json`.
+- **메모 형식** 그대로: `* 26/08/26` 줄 아래 `0946 7` (HHMM BCT). 매칭 실패·중복은 ±10분 후보와 함께 보고한다.
+- 현장 추가 = `sites.json` 항목 하나 + `secrets.local.json` 항목 하나. 현장 방문·현장 변경 없음.
