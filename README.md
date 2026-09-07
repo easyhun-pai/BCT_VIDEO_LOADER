@@ -144,6 +144,6 @@ scripts\review fetch HANIL 2026-09-07 --verdict denied --bct 7 --dry-run
 - **이벤트 ID** `{SITE}-{bct}-{yyyymmdd_HHMMSS}` = MinIO 키 `{bct}/{ts}/`. hook/ppe 는 스트림.
 - **접근** `sites.json` 의 `access`: `direct`(현장서버 ZeroTier IP) 또는 `tunnel`(엣지노드 SSH 포트포워딩으로 LAN IP 우회). 둘 다 읽기 전용.
 - **판정·점수** Influx `gate_event` (`allowed`, `hook/helmet/harness_score`). 사유는 Influx 에 없어 `thresholds` 로 유도 (엣지 `decision_engine` 과 동일 규칙).
-- **저장** `--out` > NAS `\192.168.33.22ct-review`(접근 가능할 때) > `data/review/` 순. 경로 `{site}/{yyyy-mm-dd}/{event_id}/{hook,ppe}.mp4` + `fetch.json`.
+- **저장** `--out` > NAS `\\192.168.33.22\bct-review`(접근 가능할 때) > `data/review/` 순. 경로 `{site}/{yyyy-mm-dd}/{event_id}/{hook,ppe}.mp4` + `fetch.json`.
 - **메모 형식** 그대로: `* 26/08/26` 줄 아래 `0946 7` (HHMM BCT). 매칭 실패·중복은 ±10분 후보와 함께 보고한다.
 - 현장 추가 = `sites.json` 항목 하나 + `secrets.local.json` 항목 하나. 현장 방문·현장 변경 없음.
