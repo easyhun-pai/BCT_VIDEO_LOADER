@@ -436,6 +436,9 @@ def page_review(site, date: str):
     root, src = out_root()
 
     # ── 데이터 로드 (세션 상태에 보관, 새로고침 버튼으로 재조회) ──
+    # 코드 핫리로드로 Session 클래스가 바뀌면 메모리의 객체는 옛 클래스라 새 메서드가 없다 → 다시 연다.
+    if st.session_state.get("loaded") == (site.code, date) and type(st.session_state.get("sess")) is not Session:
+        st.session_state.pop("loaded", None)
     if st.session_state.get("loaded") != (site.code, date):
         with st.spinner(f"{date} 이벤트를 불러오는 중…"):
             try:
