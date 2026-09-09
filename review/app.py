@@ -26,7 +26,7 @@ from review.catalog import Event, list_days, list_events, minio_client  # noqa: 
 from review.download import fetch_events  # noqa: E402
 from review.influx import join_events, query_day, reasons_from  # noqa: E402
 from review.session import VERDICTS, Session  # noqa: E402
-from review.auth import list_users, users_path, verify_user  # noqa: E402
+from review.auth import list_users, verify_user  # noqa: E402
 
 APP_NAME = "오탐 검수 플랫폼"
 ORG = "Paimedialab"
@@ -169,9 +169,9 @@ def _codec(path: Path) -> str:
 
 def playable_path(site, ev: Event, role: str) -> tuple[Path | None, str]:
     """(재생 가능한 로컬 파일, 라벨). _tg(박스) 우선, 없으면 학습용."""
-    key, label = ev.key_for(role, tg=True), "박스 영상 (_tg 640)"
+    key, label = ev.key_for(role, tg=True), "판정 표시 영상"
     if key is None:
-        key, label = ev.key_for(role), "학습용 (1280, 박스 없음)"
+        key, label = ev.key_for(role), "원본 영상"
     if key is None:
         return None, "영상 없음"
     d = cache_root() / site.code / ev.date / ev.id
@@ -180,7 +180,7 @@ def playable_path(site, ev: Event, role: str) -> tuple[Path | None, str]:
     raw = d / f"{role}_{kind}.mp4"
     h264 = d / f"{role}_{kind}_h264.mp4"
     if h264.exists() and h264.stat().st_size > 0:
-        return h264, label + " · 변환됨"
+        return h264, label
     if not (raw.exists() and raw.stat().st_size > 0):
         client(site).fget_object(site.minio_bucket, key, str(raw))
     codec = _codec(raw)
@@ -191,8 +191,8 @@ def playable_path(site, ev: Event, role: str) -> tuple[Path | None, str]:
                     "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(h264)],
                    capture_output=True, timeout=120)
     if h264.exists() and h264.stat().st_size > 0:
-        return h264, label + f" · {codec}→h264"
-    return raw, label + f" · {codec} (변환 실패)"
+        return h264, label
+    return raw, label + " (재생이 안 될 수 있음)"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -306,9 +306,9 @@ def page_login():
     _, mid, _ = st.columns([1, 1.2, 1])
     with mid:
         with st.container(border=True):
-            st.markdown("**검수자 로그인**")
+            st.markdown("**로그인**")
             if not list_users(st_):
-                st.error(f"계정이 없습니다. 먼저 만들어 주세요:\n\n`scripts\\review user add admin`\n\n(파일: `{users_path(st_)}`)")
+                st.error("등록된 계정이 없습니다. 관리자에게 문의하세요.")
                 return
             uid = st.text_input("ID", key="login_id", autocomplete="username")
             pw = st.text_input("비밀번호", type="password", key="login_pw", autocomplete="current-password")
@@ -322,7 +322,6 @@ def page_login():
                     log_login(u)
                     st.rerun()
                 st.error("ID 또는 비밀번호가 맞지 않습니다.")
-        st.caption("계정은 `scripts\\review user add <id>` 로 추가·변경합니다.")
 
 
 def sidebar_user():
@@ -350,12 +349,11 @@ def page_sites():
     header("현장 선택")
     root, src = out_root()
     if src == "NAS":
-        st.caption(f"저장 루트: `{root}`  (NAS)")
+        st.caption(f"저장 위치: NAS · `{root}`")
     else:
         c1, c2 = st.columns([5, 1])
         with c1:
-            st.warning(f"저장 루트: `{root}`  ({src}) · NAS `{st_.nas_root}` 에 접근하지 못해 로컬에 저장 중"
-                       + (f"\n\n{st_.nas_last_error}" if st_.nas_last_error else ""))
+            st.warning("NAS에 연결되지 않아 검수 결과를 이 PC에 저장합니다.")
         with c2:
             st.write("")
             if st.button("NAS 다시 연결", width="stretch"):
@@ -366,9 +364,9 @@ def page_sites():
         with cols[i % 3]:
             with st.container(border=True):
                 st.markdown(f"### {site.name}")
-                st.caption(f"`{site.code}` · {site.access} · 카메라 {len(site.cameras)}대 ({', '.join(site.cameras)}) · BCT {len(site.bcts)}개")
+                st.caption(f"카메라 {len(site.cameras)}대 · BCT {len(site.bcts)}개")
                 if not site.minio_access:
-                    st.warning("secrets.local.json 에 자격이 없습니다.")
+                    st.warning("접속 정보가 설정되지 않은 현장입니다.")
                 if st.button("이 현장 열기", key=f"site_{site.code}", type="primary", disabled=not site.minio_access, width="stretch"):
                     st.session_state.site_code = site.code
                     st.session_state.pop("date", None)
@@ -382,13 +380,16 @@ def page_days(site):
     header(f"{site.name} · 일자 선택")
     if st.button("← 현장 선택"):
         st.session_state.pop("site_code", None); st.rerun()
-    with st.spinner("MinIO 에서 날짜 목록을 읽는 중…"):
+    with st.spinner("날짜 목록을 불러오는 중…"):
         try:
             days = cached_days(site.code)
         except Exception as e:
-            st.error(f"현장 접근 실패: {e}"); return
+            st.error("현장에 연결하지 못했습니다. 네트워크 연결을 확인해 주세요.")
+            with st.expander("자세히"):
+                st.code(str(e))
+            return
     if not days:
-        st.warning("MinIO 에 이벤트가 없습니다."); return
+        st.warning("이벤트가 없습니다."); return
     latest = sorted(days)[-1]
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
@@ -417,11 +418,13 @@ def page_review(site, date: str):
 
     # ── 데이터 로드 (세션 상태에 보관, 새로고침 버튼으로 재조회) ──
     if st.session_state.get("loaded") != (site.code, date):
-        with st.spinner(f"{date} 이벤트를 읽는 중… (MinIO 나열 + Influx 조인)"):
+        with st.spinner(f"{date} 이벤트를 불러오는 중…"):
             try:
                 events, matched, stats, err = load_day(site, date)
             except Exception as e:
-                st.error(f"불러오기 실패: {e}")
+                st.error("이벤트를 불러오지 못했습니다. 네트워크 연결을 확인해 주세요.")
+                with st.expander("자세히"):
+                    st.code(str(e))
                 if st.button("← 일자 선택"):
                     st.session_state.pop("date", None); st.rerun()
                 return
@@ -441,7 +444,7 @@ def page_review(site, date: str):
         st.markdown(f"**{site.name}** · {date}")
         if st.button("← 일자 선택", width="stretch"):
             st.session_state.pop("date", None); st.session_state.pop("loaded", None); st.rerun()
-        if st.button("🔄 새로고침 (MinIO·Influx 재조회)", width="stretch"):
+        if st.button("🔄 새로고침", width="stretch"):
             st.session_state.pop("loaded", None); st.rerun()
         reviewer = st.session_state.user["id"]           # 로그인 ID 가 곧 검수자 (session.json 의 by)
         st.divider()
@@ -462,7 +465,6 @@ def page_review(site, date: str):
         c = sess.counts()
         st.markdown("**세션**")
         st.caption(f"정탐 {c['tp']} · 오탐 {c['fp']} · 애매 {c['unsure']} · 내보냄 {c['exported']}")
-        st.caption(f"`{sess.path}`")
         pend = sess.unexported_fp_ids()
         if st.button(f"📦 오탐 내보내기 ({len(pend)}건)", disabled=not pend, width="stretch", type="primary"):
             export_fp(site, events, sess, root, pend)
@@ -478,10 +480,12 @@ def page_review(site, date: str):
     inf_val = f"{stats.get('matched', 0)}/{stats.get('events', len(events))}" if stats else "미조인"
     items = [("전체", f"{len(events)}", ""), ("필터", f"{len(flist)}", ""), ("검수", f"{n_done}/{len(flist)}", ""),
              ("정탐", f"{c['tp']}", "ok"), ("오탐", f"{c['fp']}", "fp"), ("애매", f"{c['unsure']}", ""),
-             ("Influx 조인", inf_val, "warn" if st.session_state.get("influx_err") else ""), ("저장", src, "" if src == "NAS" else "warn")]
+             ("판정 연동", inf_val, "warn" if st.session_state.get("influx_err") else ""), ("저장", "NAS" if src == "NAS" else "이 PC", "" if src == "NAS" else "warn")]
     pills(items)
     if st.session_state.get("influx_err"):
-        st.warning(f"Influx 조회 실패 — 판정·점수 없이 표시 중: {st.session_state.influx_err[:120]}")
+        st.warning("판정 정보를 불러오지 못해 영상만 표시합니다. 새로고침으로 다시 시도할 수 있습니다.")
+        with st.expander("자세히"):
+            st.code(st.session_state.influx_err)
 
     if not flist:
         st.info("필터 조건에 맞는 이벤트가 없습니다."); return
@@ -573,14 +577,14 @@ def export_fp(site, events: list[Event], sess: Session, root: Path, ids: list[st
     idx = {e.id: e for e in events}
     targets = [idx[i] for i in ids if i in idx]
     if not targets:
-        st.warning("내보낼 이벤트가 목록에 없습니다 (새로고침 후 다시)."); return
+        st.warning("내보낼 이벤트가 없습니다. 새로고침 후 다시 시도해 주세요."); return
     c = client(site)
     bar = st.progress(0.0, text="오탐 클립 다운로드 중…")
     def prog(i, n, res):
         bar.progress(i / n, text=f"{i}/{n} {res.event_id}")
         sess.mark_exported(res.event_id, res.downloaded + res.skipped)
     fetch_events(c, site.minio_bucket, targets, root, site.cameras, include_tg=False, progress=prog)
-    bar.progress(1.0, text=f"완료 · {len(targets)}건 → {root / site.code / sess.data['date']}")
+    bar.progress(1.0, text=f"완료 · {len(targets)}건 저장됨")
 
 
 # ══════════════════════════════════════════════════════════════════════════
