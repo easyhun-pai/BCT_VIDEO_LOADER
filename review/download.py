@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,6 +24,31 @@ class FetchResult:
     downloaded: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     missing: list[str] = field(default_factory=list)
+
+
+def _download(client: Minio, bucket: str, key: str, dst: Path, chunk: int = 1 << 20) -> None:
+    """오브젝트를 dst 로 스트리밍 다운로드.
+
+    minio 의 fget_object 는 '<dst>.<hash>.part.minio' 임시파일을 쓰는데 NAS/깊은 경로에서 Windows 260자를
+    넘기고, 임시파일을 다른 드라이브(C:\\Temp)에 두면 NAS 로 rename 이 안 된다(WinError 17).
+    → 같은 폴더에 짧은 이름의 임시파일을 쓰고 완료 시 os.replace 로 바꿔치기한다.
+    """
+    tmp = dst.parent / f".{uuid.uuid4().hex[:8]}.part"
+    resp = client.get_object(bucket, key)
+    try:
+        with open(tmp, "wb") as f:
+            for part in resp.stream(chunk):
+                f.write(part)
+        os.replace(tmp, dst)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    finally:
+        resp.close()
+        resp.release_conn()
 
 
 def fetch_events(client: Minio, bucket: str, events: list[Event], out_root: Path,
@@ -47,10 +71,7 @@ def fetch_events(client: Minio, bucket: str, events: list[Event], out_root: Path
             if dst.exists() and dst.stat().st_size > 0:
                 r.skipped.append(label)
                 continue
-            # minio 는 dst 옆에 '<dst>.<hash>.part.minio' 임시파일을 만드는데, NAS/깊은 경로에서는
-            # Windows 260자 한계를 넘기 쉽다. 임시파일은 짧은 temp 디렉터리에 두고 완료 시 dst 로 옮긴다.
-            tmp = os.path.join(tempfile.gettempdir(), f"bctrv_{uuid.uuid4().hex}.part")
-            client.fget_object(bucket, key, str(dst), tmp_file_path=tmp)
+            _download(client, bucket, key, dst)
             r.downloaded.append(label)
         results.append(r)
         if progress:

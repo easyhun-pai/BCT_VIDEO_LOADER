@@ -636,7 +636,14 @@ def export_clips(site, events: list[Event], sess: Session, root: Path, pend: dic
     def prog(i, n, res):
         bar.progress(i / n, text=f"{i}/{n} · {res.event_id}")
         sess.mark_exported(res.event_id, res.downloaded + res.skipped)
-    fetch_events(c, site.minio_bucket, targets, root, site.cameras, include_tg=False, progress=prog)
+    try:
+        fetch_events(c, site.minio_bucket, targets, root, site.cameras, include_tg=False, progress=prog)
+    except Exception as e:
+        bar.empty()
+        st.error("영상을 저장하지 못했습니다. 저장 위치(NAS) 연결을 확인하고 다시 시도해 주세요.")
+        with st.expander("자세히"):
+            st.code(str(e))
+        st.stop()
     bar.progress(1.0, text=f"완료 · {len(targets)}건 저장됨")
 
 
