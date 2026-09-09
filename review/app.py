@@ -275,6 +275,28 @@ def keyboard():
         pass
 
 
+def playback_rate(rate: float):
+    """모든 <video> 의 재생 속도를 맞춘다. 새로 생기는 플레이어와 사용자가 다시 재생할 때도 유지."""
+    try:
+        components.html(f"""
+<script>
+(function(){{
+  const doc = window.parent.document;
+  doc.__bctRate = {float(rate)};
+  const apply = () => doc.querySelectorAll('video').forEach(v => {{ if (v.playbackRate !== doc.__bctRate) v.playbackRate = doc.__bctRate; }});
+  apply(); setTimeout(apply, 300); setTimeout(apply, 1500);
+  if (!doc.__bctRateObs) {{
+    doc.__bctRateObs = new MutationObserver(apply);
+    doc.__bctRateObs.observe(doc.body, {{childList: true, subtree: true}});
+    doc.addEventListener('play', (e) => {{ if (e.target && e.target.tagName === 'VIDEO') e.target.playbackRate = doc.__bctRate; }}, true);
+    doc.addEventListener('loadedmetadata', (e) => {{ if (e.target && e.target.tagName === 'VIDEO') e.target.playbackRate = doc.__bctRate; }}, true);
+  }}
+}})();
+</script>""", height=0)
+    except Exception:
+        pass
+
+
 def _keyboard_html():
     components.html("""
 <script>
@@ -468,6 +490,8 @@ def page_review(site, date: str):
             st.session_state.pop("date", None); st.session_state.pop("loaded", None); st.rerun()
         if st.button("🔄 새로고침", width="stretch"):
             st.session_state.pop("loaded", None); st.rerun()
+        rate = st.select_slider("재생 속도", options=[1.0, 1.5, 2.0, 3.0], value=st.session_state.get("rate", 2.0),
+                                format_func=lambda x: f"{x:g}x", key="rate")
         reviewer = st.session_state.user["id"]           # 로그인 ID 가 곧 검수자 (session.json 의 by)
         st.divider()
         st.markdown("**필터**")
@@ -589,6 +613,7 @@ def page_review(site, date: str):
         if r["my"] and memo != r["memo"]:
             sess.set_memo(ev.id, memo)
     keyboard()
+    playback_rate(rate)
 
     # ── 목록 ──
     with st.expander(f"하루치 목록 (필터 {len(flist)}건)", expanded=False):
