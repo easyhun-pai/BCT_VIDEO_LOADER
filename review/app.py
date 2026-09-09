@@ -27,7 +27,7 @@ from review.download import fetch_events  # noqa: E402
 from review.influx import join_events, query_day, reasons_from  # noqa: E402
 from review.session import VERDICTS, Session  # noqa: E402
 
-st.set_page_config(page_title="BCT 오탐 검수 세션", page_icon="🪝", layout="wide")
+st.set_page_config(page_title="BCT 오탐 검수 세션", page_icon="🔎", layout="wide")   # 🪝 는 Windows 기본 폰트에 없어 □ 로 보임
 
 PLAYABLE = {"h264", "avc1", "vp9", "vp8", "av1", "hevc"}   # 브라우저가 재생하는 코덱 (hevc 는 환경에 따라)
 BTN = {"tp": "정탐 ←", "fp": "오탐 →", "unsure": "애매 ↓", "skip": "건너뛰기 ␣", "undo": "되돌리기 Z"}
@@ -220,9 +220,19 @@ def _keyboard_html():
 # ══════════════════════════════════════════════════════════════════════════
 def page_sites():
     st_ = settings()
-    st.title("🪝 BCT 오탐 검수 세션")
+    st.title("BCT 오탐 검수 세션")
     root, src = out_root()
-    st.caption(f"저장 루트: `{root}`  ({src})" + ("" if src == "NAS" else "  · NAS 공유가 없어 로컬에 저장 중"))
+    if src == "NAS":
+        st.caption(f"저장 루트: `{root}`  (NAS)")
+    else:
+        c1, c2 = st.columns([5, 1])
+        with c1:
+            st.warning(f"저장 루트: `{root}`  ({src}) · NAS `{st_.nas_root}` 에 접근하지 못해 로컬에 저장 중"
+                       + (f"\n\n{st_.nas_last_error}" if st_.nas_last_error else ""))
+        with c2:
+            st.write("")
+            if st.button("NAS 다시 연결", width="stretch"):
+                st_.force_nas_retry(); st.rerun()
     st.subheader("현장 선택")
     cols = st.columns(3)
     for i, site in enumerate(st_.sites.values()):

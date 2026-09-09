@@ -72,6 +72,7 @@ class Settings:
     timezone: str
     sites: dict[str, Site]
     nas_secrets: dict = field(default_factory=dict)   # secrets.local.json 의 nas: {share, user, password}
+    nas_last_error: str = ""                          # 마지막 NAS 연결 실패 사유 (UI 표시용)
 
     def site(self, code: str) -> Site:
         key = code.upper()
@@ -83,17 +84,28 @@ class Settings:
         """NAS 경로가 안 보이면 secrets.nas 자격으로 SMB 연결을 한 번 시도한다 (Windows net use)."""
         nas = self.nas_secrets
         if not (nas.get("share") and nas.get("user")) or os.name != "nt":
+            self.nas_last_error = "secrets.local.json 에 nas.share / nas.user 가 없음"
             return False
-        if getattr(self, "_nas_tried", False):     # 프로세스당 한 번만 시도 (앱 재실행마다 net use 반복 방지)
+        import subprocess, time
+        # 연속 재시도 방지: 60초 쿨다운 (앱은 렌더마다 이 함수를 부른다). 강제 재시도는 force_nas_retry().
+        if time.time() - getattr(self, "_nas_tried_at", 0.0) < 60:
             return False
-        self._nas_tried = True
-        import subprocess
+        self._nas_tried_at = time.time()
         try:
-            subprocess.run(["net", "use", nas["share"], nas.get("password", ""), f"/user:{nas['user']}", "/persistent:yes"],
-                           capture_output=True, timeout=20)
-        except Exception:
+            r = subprocess.run(["net", "use", nas["share"], nas.get("password", ""), f"/user:{nas['user']}", "/persistent:yes"],
+                               capture_output=True, text=True, errors="replace", timeout=20)
+            msg = (r.stdout + r.stderr).replace(nas.get("password", ""), "***").strip()
+            self.nas_last_error = "" if r.returncode == 0 else f"net use rc={r.returncode}: {msg[:200]}"
+        except Exception as e:
+            self.nas_last_error = f"net use 실행 실패: {e}"
             return False
-        return os.path.isdir(self.nas_root)
+        ok = os.path.isdir(self.nas_root)
+        if not ok and not self.nas_last_error:
+            self.nas_last_error = f"연결은 됐으나 경로가 없음: {self.nas_root}"
+        return ok
+
+    def force_nas_retry(self) -> None:
+        self._nas_tried_at = 0.0
 
     def resolve_out_root(self, override: str | None = None) -> tuple[Path, str]:
         """저장 루트 결정: --out > NAS(접근 가능할 때, 필요하면 자동 연결) > 로컬 폴백. (경로, 출처) 반환."""
