@@ -489,6 +489,7 @@ def page_review(site, date: str):
         sess0 = Session.open(root, site.code, date, {"access": acc.mode, "minio": acc.minio_endpoint})
         u = st.session_state.user
         sess0.note_reviewer(u["id"], u.get("ip", ""))
+        st.session_state.pop("export_err", None)
         st.session_state.update(events=events, matched=matched, stats=stats, influx_err=err,
                                 sess=sess0, loaded=(site.code, date), idx=0)
     events: list[Event] = st.session_state.events
@@ -528,7 +529,12 @@ def page_review(site, date: str):
         n_pend = sum(len(v) for v in pend.values())
         if st.button(f"📦 영상 내보내기 (오탐 {len(pend['fp'])} · 애매 {len(pend['unsure'])})", disabled=not n_pend, width="stretch", type="primary"):
             export_clips(site, events, sess, root, pend)
-            st.rerun()
+            if not st.session_state.get("export_err"):
+                st.rerun()
+        if st.session_state.get("export_err"):
+            st.error("영상을 저장하지 못했습니다. 저장 위치(NAS) 연결을 확인하고 다시 시도해 주세요.")
+            with st.expander("자세히"):
+                st.code(st.session_state.export_err)
 
     flist = apply_filters(rows_all, f)
     n_done = sum(1 for r in flist if r["my"])
@@ -666,10 +672,10 @@ def export_clips(site, events: list[Event], sess: Session, root: Path, pend: dic
         fetch_events(c, site.minio_bucket, targets, root, site.cameras, include_tg=False, progress=prog)
     except Exception as e:
         bar.empty()
-        st.error("영상을 저장하지 못했습니다. 저장 위치(NAS) 연결을 확인하고 다시 시도해 주세요.")
-        with st.expander("자세히"):
-            st.code(str(e))
-        st.stop()
+        # st.stop() 을 쓰면 본문까지 안 그려져 화면이 비므로, 실패해도 계속 그린다.
+        st.session_state.export_err = f"{type(e).__name__}: {e}"
+        return
+    st.session_state.pop("export_err", None)
     bar.progress(1.0, text=f"완료 · {len(targets)}건 저장됨")
 
 
