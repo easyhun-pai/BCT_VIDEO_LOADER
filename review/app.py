@@ -41,35 +41,35 @@ CSS = """
 .stDeployButton, [data-testid="stAppDeployButton"] { display:none !important; }
 header[data-testid="stHeader"] { background:transparent; height:0; }
 .block-container { padding-top:1.1rem; padding-bottom:3rem; max-width:1280px; }
+/* 팔레트: 화이트 바탕 + 블루(#2563EB) 포인트. 판정색만 의미색(초록/빨강/회색) 유지 */
 /* 상단 헤더 */
-.pm-head { display:flex; align-items:baseline; gap:14px; border-bottom:2px solid #1B1F24; padding:2px 0 10px; margin:0 0 18px; }
-.pm-head .eyebrow { font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; color:#8A5A12; font-weight:700; }
-.pm-head h1 { font-size:21px; margin:0; font-weight:700; letter-spacing:-.01em; }
-.pm-head .crumb { margin-left:auto; color:#7A828C; font-size:13px; }
+.pm-head { display:flex; align-items:baseline; gap:14px; border-bottom:1px solid #E3E8EF; padding:2px 0 10px; margin:0 0 18px; }
+.pm-head .eyebrow { font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; color:#2563EB; font-weight:700; }
+.pm-head h1 { font-size:21px; margin:0; font-weight:700; letter-spacing:-.01em; color:#111827; }
+.pm-head .crumb { margin-left:auto; color:#6B7280; font-size:13px; }
 /* 상태 알약 */
 .pm-pills { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }
-.pm-pill { border:1px solid #D9DCD6; border-radius:999px; padding:2px 12px; font-size:13px; background:#F7F8F6; color:#4A5058; white-space:nowrap; }
-.pm-pill b { color:#1B1F24; font-weight:600; }
-.pm-pill.fp b { color:#B2413F; } .pm-pill.ok b { color:#2F7A4E; } .pm-pill.warn { border-color:#E3B341; background:#FBF3DF; }
+.pm-pill { border:1px solid #E3E8EF; border-radius:999px; padding:2px 12px; font-size:13px; background:#F5F7FA; color:#4B5563; white-space:nowrap; }
+.pm-pill b { color:#111827; font-weight:600; }
+.pm-pill.fp b { color:#DC2626; } .pm-pill.ok b { color:#16A34A; } .pm-pill.warn { border-color:#F59E0B; background:#FFFBEB; }
 /* 현재 이벤트 카드 */
-.pm-ev { border:1px solid #D9DCD6; border-left:4px solid #B7791F; background:#FFFFFF; padding:10px 14px; margin:4px 0 10px; font-size:14px; line-height:1.7; }
-.pm-ev code { font-family:ui-monospace,Consolas,monospace; font-size:13px; background:#F3F3EF; padding:1px 6px; border-radius:3px; }
-.pm-ev .v-tp { color:#2F7A4E; font-weight:700; } .pm-ev .v-fp { color:#B2413F; font-weight:700; } .pm-ev .v-un { color:#7A828C; font-weight:700; }
-.pm-ev .muted { color:#7A828C; }
+.pm-ev { border:1px solid #E3E8EF; border-left:4px solid #2563EB; background:#FFFFFF; padding:10px 14px; margin:4px 0 10px; font-size:14px; line-height:1.7; border-radius:0 6px 6px 0; }
+.pm-ev code { font-family:ui-monospace,Consolas,monospace; font-size:13px; background:#EFF4FF; color:#1E3A8A; padding:1px 6px; border-radius:3px; }
+.pm-ev .v-tp { color:#16A34A; font-weight:700; } .pm-ev .v-fp { color:#DC2626; font-weight:700; } .pm-ev .v-un { color:#6B7280; font-weight:700; }
+.pm-ev .muted { color:#6B7280; }
 /* 판정 버튼 */
-.st-key-btn_tp button { border-color:#2F7A4E; color:#2F7A4E; font-weight:600; }
-.st-key-btn_tp button:hover { background:#DDEFE3; }
-.st-key-btn_fp button { background:#B2413F; border-color:#B2413F; color:#FFFFFF; font-weight:600; }
-.st-key-btn_fp button:hover { background:#9A3634; border-color:#9A3634; }
-.st-key-btn_unsure button { border-color:#7A828C; color:#4A5058; font-weight:600; }
-.st-key-btn_skip button, .st-key-btn_undo button { color:#4A5058; }
-/* 현장 카드 */
-.st-key-sitecard [data-testid="stVerticalBlockBorderWrapper"] { background:#FFFFFF; }
-div[data-testid="stVerticalBlockBorderWrapper"] { border-color:#D9DCD6 !important; }
+.st-key-btn_tp button { border-color:#16A34A; color:#16A34A; font-weight:600; }
+.st-key-btn_tp button:hover { background:#DCFCE7; }
+.st-key-btn_fp button { background:#DC2626; border-color:#DC2626; color:#FFFFFF; font-weight:600; }
+.st-key-btn_fp button:hover { background:#B91C1C; border-color:#B91C1C; }
+.st-key-btn_unsure button { border-color:#9CA3AF; color:#4B5563; font-weight:600; }
+.st-key-btn_skip button, .st-key-btn_undo button { color:#4B5563; }
+/* 카드·테두리 */
+div[data-testid="stVerticalBlockBorderWrapper"] { border-color:#E3E8EF !important; background:#FFFFFF; }
 /* 사이드바 */
-section[data-testid="stSidebar"] { background:#F7F8F6; border-right:1px solid #D9DCD6; }
+section[data-testid="stSidebar"] { background:#F8FAFC; border-right:1px solid #E3E8EF; }
 section[data-testid="stSidebar"] .block-container { padding-top:1rem; }
-h3 { font-size:17px !important; }
+h3 { font-size:17px !important; color:#111827; }
 </style>
 """
 

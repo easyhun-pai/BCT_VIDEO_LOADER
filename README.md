@@ -154,7 +154,8 @@ scripts\review fetch HANIL 2026-09-07 --verdict denied --bct 7 --dry-run
 검수자 PC에서 실행하는 로컬 웹(Streamlit). 브라우저는 `localhost:8501`, 상시 서버 없음.
 
 ```powershell
-scripts\review_app.bat        # 실행 → 브라우저 자동 오픈
+.\scripts\review_app.ps1      # PowerShell — 실행 → 브라우저 자동 오픈, Ctrl+C 로 바로 종료
+scripts\review_app.bat        # cmd 용 (Ctrl+C 시 "일괄 작업을 끝내시겠습니까?" 가 뜨는 건 cmd 사양)
 ```
 
 흐름: **현장 선택 → 일자 선택 → 하루치 목록·필터 → 검수 → 오탐 내보내기**

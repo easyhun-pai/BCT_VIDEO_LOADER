@@ -1,13 +1,13 @@
-# Streamlit 테마 — 설계서(data/_design)와 같은 팔레트. 실행기가 저장소 루트를 cwd 로 잡아 이 파일을 읽는다.
+# Streamlit 테마 — 화이트 + 블루 포인트. 실행기가 저장소 루트를 cwd 로 잡아 이 파일을 읽는다.
 [theme]
 base = "light"
-primaryColor = "#B7791F"
+primaryColor = "#2563EB"
 backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F3F3EF"
-textColor = "#1B1F24"
+secondaryBackgroundColor = "#F5F7FA"
+textColor = "#111827"
 font = "sans serif"
 baseRadius = "6px"
-borderColor = "#D9DCD6"
+borderColor = "#E3E8EF"
 
 [browser]
 gatherUsageStats = false
