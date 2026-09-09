@@ -1,6 +1,7 @@
 {
   "_note": "현장 목록. 자격(MinIO 키·Influx 토큰)은 secrets.local.json 의 sites.<code> 에 둔다. 현장 추가 = 여기 한 항목 + secrets 한 항목. 현장 방문·현장 변경 없음.",
-  "nas_root": "\\\\192.168.33.22\\bct-review",
+  "nas_root": "\\\\192.168.33.22\\DEV\\2026_retrain_dataset",
+  "_nas_note": "Synology NAS 공유 DEV(개발팀) 아래 2026_retrain_dataset. 접근 자격은 secrets.local.json 의 nas 에. 연결이 없으면 툴이 net use 로 한 번 시도한다.",
   "local_fallback": "../data/review",
   "timezone": "+09:00",
   "sites": [
@@ -11,11 +12,11 @@
         "hook",
         "ppe"
       ],
-      "access": "tunnel",
-      "_access_note": "direct = server.zerotier_ip 로 :9000/:8086 직접. tunnel = 엣지노드 SSH 포트포워딩으로 LAN IP 우회. 현장서버 ZeroTier IP 확인되면 direct 로 전환.",
+      "access": "direct",
+      "_access_note": "direct = server.zerotier_ip 로 :9000/:8086 직접 (2026-09-09 확인). tunnel = 엣지노드 SSH 포트포워딩으로 LAN IP 우회 (direct 가 막히면 전환).",
       "server": {
         "lan_ip": "172.81.161.149",
-        "zerotier_ip": "",
+        "zerotier_ip": "10.113.93.41",
         "minio_port": 9000,
         "influx_port": 8086
       },

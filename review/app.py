@@ -1,0 +1,462 @@
+"""BCT 오탐 검수 세션 — 검수자 PC 로컬 웹 (Streamlit).
+
+실행:  scripts\\review_app.bat   (또는  python -m streamlit run review/app.py)
+흐름:  현장 선택 → 일자 선택 → 하루치 목록·필터 → 검수(정탐/오탐/애매) → 오탐 내보내기
+저장:  {저장루트}/{site}/{date}/session.json  (판정), {event_id}/{hook,ppe}.mp4 (오탐 학습용 클립)
+"""
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import sys
+from datetime import date as _date, datetime, time as _time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import streamlit as st  # noqa: E402
+import streamlit.components.v1 as components  # noqa: E402
+
+from review import config as cfgmod  # noqa: E402
+from review.access import SiteAccess  # noqa: E402
+from review.catalog import Event, list_days, list_events, minio_client  # noqa: E402
+from review.download import fetch_events  # noqa: E402
+from review.influx import join_events, query_day, reasons_from  # noqa: E402
+from review.session import VERDICTS, Session  # noqa: E402
+
+st.set_page_config(page_title="BCT 오탐 검수 세션", page_icon="🪝", layout="wide")
+
+PLAYABLE = {"h264", "avc1", "vp9", "vp8", "av1", "hevc"}   # 브라우저가 재생하는 코덱 (hevc 는 환경에 따라)
+BTN = {"tp": "정탐 ←", "fp": "오탐 →", "unsure": "애매 ↓", "skip": "건너뛰기 ␣", "undo": "되돌리기 Z"}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 설정 · 접근
+# ══════════════════════════════════════════════════════════════════════════
+@st.cache_resource(show_spinner=False)
+def settings():
+    return cfgmod.load()
+
+
+def out_root() -> tuple[Path, str]:
+    return settings().resolve_out_root(os.environ.get("BCT_REVIEW_OUT") or None)
+
+
+def cache_root() -> Path:
+    """영상 캐시는 NAS 가 아니라 항상 로컬 (재생용 임시 파일)."""
+    st_ = settings()
+    fb = Path(st_.local_fallback)
+    if not fb.is_absolute():
+        fb = (st_.cfg_dir / fb).resolve()
+    p = fb / "_cache"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def access(site) -> SiteAccess:
+    key = f"_acc_{site.code}"
+    if key not in st.session_state:
+        acc = SiteAccess(site, quiet=True)
+        acc.__enter__()                       # tunnel 이면 ssh 프로세스가 앱 수명 동안 유지
+        st.session_state[key] = acc
+    return st.session_state[key]
+
+
+def client(site):
+    site.require_secrets()
+    acc = access(site)
+    return minio_client(acc.minio_endpoint, site.minio_access, site.minio_secret, site.minio_secure)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def cached_days(code: str) -> dict:
+    site = settings().site(code)
+    return list_days(client(site), site.minio_bucket)
+
+
+def load_day(site, date: str):
+    tz = settings().timezone
+    c = client(site)
+    events = list_events(c, site.minio_bucket, site.code, date, tg_prefix=site.tg_prefix)
+    matched, stats, err = {}, {}, ""
+    if site.influx_token:
+        try:
+            inf = site.influx
+            rows = query_day(access(site).influx_url, site.influx_token, inf.get("org", "mithril"),
+                             inf.get("bucket", "gate_events"), inf.get("measurement", "gate_event"), date, tz)
+            matched, stats = join_events(events, rows, tz, int(inf.get("join_tolerance_sec", 90)))
+        except Exception as e:  # Influx 가 죽어도 목록은 나오게
+            err = str(e)
+    return events, matched, stats, err
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 영상 (로컬 캐시 → 필요 시 H.264 변환)
+# ══════════════════════════════════════════════════════════════════════════
+def _codec(path: Path) -> str:
+    if not shutil.which("ffprobe"):
+        return "?"
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                              "stream=codec_name", "-of", "csv=p=0", str(path)],
+                             capture_output=True, text=True, timeout=20)
+        return out.stdout.strip().lower() or "?"
+    except Exception:
+        return "?"
+
+
+def playable_path(site, ev: Event, role: str) -> tuple[Path | None, str]:
+    """(재생 가능한 로컬 파일, 라벨). _tg(박스) 우선, 없으면 학습용."""
+    key, label = ev.key_for(role, tg=True), "박스 영상 (_tg 640)"
+    if key is None:
+        key, label = ev.key_for(role), "학습용 (1280, 박스 없음)"
+    if key is None:
+        return None, "영상 없음"
+    d = cache_root() / site.code / ev.date / ev.id
+    d.mkdir(parents=True, exist_ok=True)
+    kind = "tg" if key.startswith(site.tg_prefix) else "train"
+    raw = d / f"{role}_{kind}.mp4"
+    h264 = d / f"{role}_{kind}_h264.mp4"
+    if h264.exists() and h264.stat().st_size > 0:
+        return h264, label + " · 변환됨"
+    if not (raw.exists() and raw.stat().st_size > 0):
+        client(site).fget_object(site.minio_bucket, key, str(raw))
+    codec = _codec(raw)
+    if codec in PLAYABLE or codec == "?" or not shutil.which("ffmpeg"):
+        return raw, label
+    # mp4v 등 브라우저 미지원 → H.264 로 한 번만 변환
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(raw), "-c:v", "libx264", "-preset", "veryfast",
+                    "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(h264)],
+                   capture_output=True, timeout=120)
+    if h264.exists() and h264.stat().st_size > 0:
+        return h264, label + f" · {codec}→h264"
+    return raw, label + f" · {codec} (변환 실패)"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 행 구성 · 필터
+# ══════════════════════════════════════════════════════════════════════════
+def build_rows(site, events, matched, sess: Session) -> list[dict]:
+    rows = []
+    for ev in events:
+        r = matched.get(ev.id)
+        v = sess.verdict(ev.id)
+        rows.append({
+            "ev": ev, "id": ev.id, "time": ev.time_str, "bct": ev.bct,
+            "verdict": (r or {}).get("verdict", ""),
+            "hook": (r or {}).get("hook_score"), "helmet": (r or {}).get("helmet_score"), "harness": (r or {}).get("harness_score"),
+            "reasons": reasons_from(r, site.thresholds),
+            "tg": bool(ev.tg), "train": bool(ev.train),
+            "my": (v or {}).get("verdict", ""), "memo": (v or {}).get("memo", ""),
+        })
+    return rows
+
+
+def apply_filters(rows: list[dict], f: dict) -> list[dict]:
+    out = []
+    t0, t1 = f["time"]
+    for r in rows:
+        hh, mm = int(r["time"][:2]), int(r["time"][3:5])
+        t = _time(hh, mm)
+        if not (t0 <= t <= t1):
+            continue
+        if f["verdict"] != "전체" and r["verdict"] != f["verdict"]:
+            continue
+        if f["bcts"] and r["bct"] not in f["bcts"]:
+            continue
+        if f["reasons"] and not any(x in r["reasons"] for x in f["reasons"]):
+            continue
+        if r["hook"] is not None and not (f["hook"][0] <= r["hook"] <= f["hook"][1]):
+            continue
+        miss = f["missing"]
+        if miss:
+            sc = {"hook": r["hook"], "helmet": r["helmet"], "harness": r["harness"]}
+            if not all((sc[k] is not None and sc[k] <= 0.0) for k in miss):
+                continue
+        s = f["status"]
+        if s == "미검수" and r["my"]:
+            continue
+        if s == "검수됨" and not r["my"]:
+            continue
+        if s == "오탐만" and r["my"] != "fp":
+            continue
+        out.append(r)
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 키보드 (← 정탐, → 오탐, ↓ 애매, Space 건너뛰기, Z 되돌리기)
+# ══════════════════════════════════════════════════════════════════════════
+def keyboard():
+    try:
+        _keyboard_html()
+    except Exception:       # 헤드리스 테스트(AppTest) 등 컴포넌트 미지원 환경
+        pass
+
+
+def _keyboard_html():
+    components.html("""
+<script>
+(function(){
+  const doc = window.parent.document;
+  if (doc.__bctKeys) return; doc.__bctKeys = true;
+  const map = {ArrowLeft:'정탐', ArrowRight:'오탐', ArrowDown:'애매', ' ':'건너뛰기', z:'되돌리기', Z:'되돌리기'};
+  doc.addEventListener('keydown', (e) => {
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
+    const label = map[e.key]; if (!label) return;
+    const btn = [...doc.querySelectorAll('button')].find(b => (b.innerText || '').trim().startsWith(label));
+    if (btn) { e.preventDefault(); btn.click(); }
+  }, true);
+})();
+</script>""", height=0)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 페이지 1 · 현장 선택
+# ══════════════════════════════════════════════════════════════════════════
+def page_sites():
+    st_ = settings()
+    st.title("🪝 BCT 오탐 검수 세션")
+    root, src = out_root()
+    st.caption(f"저장 루트: `{root}`  ({src})" + ("" if src == "NAS" else "  · NAS 공유가 없어 로컬에 저장 중"))
+    st.subheader("현장 선택")
+    cols = st.columns(3)
+    for i, site in enumerate(st_.sites.values()):
+        with cols[i % 3]:
+            with st.container(border=True):
+                st.markdown(f"### {site.name}")
+                st.caption(f"`{site.code}` · {site.access} · 카메라 {len(site.cameras)}대 ({', '.join(site.cameras)}) · BCT {len(site.bcts)}개")
+                if not site.minio_access:
+                    st.warning("secrets.local.json 에 자격이 없습니다.")
+                if st.button("이 현장 열기", key=f"site_{site.code}", type="primary", disabled=not site.minio_access, width="stretch"):
+                    st.session_state.site_code = site.code
+                    st.session_state.pop("date", None)
+                    st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 페이지 2 · 일자 선택
+# ══════════════════════════════════════════════════════════════════════════
+def page_days(site):
+    st.title(f"{site.name} · 일자 선택")
+    if st.button("← 현장 선택"):
+        st.session_state.pop("site_code", None); st.rerun()
+    with st.spinner("MinIO 에서 날짜 목록을 읽는 중…"):
+        try:
+            days = cached_days(site.code)
+        except Exception as e:
+            st.error(f"현장 접근 실패: {e}"); return
+    if not days:
+        st.warning("MinIO 에 이벤트가 없습니다."); return
+    latest = sorted(days)[-1]
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        pick = st.date_input("일자", value=_date.fromisoformat(latest), min_value=_date.fromisoformat(sorted(days)[0]),
+                             max_value=max(_date.today(), _date.fromisoformat(latest)))
+    with c2:
+        st.metric("해당 일자 이벤트", sum(days.get(pick.isoformat(), {}).values()))
+    with c3:
+        st.write(""); st.write("")
+        if st.button("이 날짜 열기 →", type="primary", width="stretch"):
+            st.session_state.date = pick.isoformat()
+            st.session_state.pop("loaded", None)
+            st.rerun()
+    st.subheader("최근 14일")
+    recent = sorted(days)[-14:]
+    st.dataframe([{"date": d, "total": sum(days[d].values()), **{b: days[d].get(b, 0) for b in site.bcts}} for d in reversed(recent)],
+                 width="stretch", hide_index=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 페이지 3 · 검수
+# ══════════════════════════════════════════════════════════════════════════
+def page_review(site, date: str):
+    st_ = settings()
+    root, src = out_root()
+
+    # ── 데이터 로드 (세션 상태에 보관, 새로고침 버튼으로 재조회) ──
+    if st.session_state.get("loaded") != (site.code, date):
+        with st.spinner(f"{date} 이벤트를 읽는 중… (MinIO 나열 + Influx 조인)"):
+            try:
+                events, matched, stats, err = load_day(site, date)
+            except Exception as e:
+                st.error(f"불러오기 실패: {e}")
+                if st.button("← 일자 선택"):
+                    st.session_state.pop("date", None); st.rerun()
+                return
+        acc = access(site)
+        st.session_state.update(events=events, matched=matched, stats=stats, influx_err=err,
+                                sess=Session.open(root, site.code, date, {"access": acc.mode, "minio": acc.minio_endpoint}),
+                                loaded=(site.code, date), idx=0)
+    events: list[Event] = st.session_state.events
+    matched: dict = st.session_state.matched
+    stats: dict = st.session_state.stats
+    sess: Session = st.session_state.sess
+
+    # ── 사이드바: 검수자 · 필터 · 내보내기 ──
+    with st.sidebar:
+        st.markdown(f"**{site.name}** · {date}")
+        if st.button("← 일자 선택", width="stretch"):
+            st.session_state.pop("date", None); st.session_state.pop("loaded", None); st.rerun()
+        if st.button("🔄 새로고침 (MinIO·Influx 재조회)", width="stretch"):
+            st.session_state.pop("loaded", None); st.rerun()
+        reviewer = st.text_input("검수자", value=sess.data.get("reviewer") or os.environ.get("USERNAME", ""))
+        st.divider()
+        st.markdown("**필터**")
+        rows_all = build_rows(site, events, matched, sess)
+        all_reasons = sorted({x for r in rows_all for x in r["reasons"]})
+        all_bcts = sorted({r["bct"] for r in rows_all}, key=lambda b: int(b[3:]))
+        f = {
+            "time": st.slider("시간대", value=(_time(0, 0), _time(23, 59)), step=__import__("datetime").timedelta(minutes=5), format="HH:mm"),
+            "verdict": st.radio("판정", ["전체", "allowed", "denied"], horizontal=True),
+            "reasons": st.multiselect("사유", all_reasons),
+            "bcts": st.multiselect("BCT", all_bcts),
+            "hook": st.slider("Hook 점수", 0.0, 1.0, (0.0, 1.0), 0.05),
+            "missing": st.multiselect("클래스 미검출 (점수 0)", ["hook", "helmet", "harness"]),
+            "status": st.radio("상태", ["전체", "미검수", "검수됨", "오탐만"], horizontal=True),
+        }
+        st.divider()
+        c = sess.counts()
+        st.markdown("**세션**")
+        st.caption(f"정탐 {c['tp']} · 오탐 {c['fp']} · 애매 {c['unsure']} · 내보냄 {c['exported']}")
+        st.caption(f"`{sess.path}`")
+        pend = sess.unexported_fp_ids()
+        if st.button(f"📦 오탐 내보내기 ({len(pend)}건)", disabled=not pend, width="stretch", type="primary"):
+            export_fp(site, events, sess, root, pend)
+            st.rerun()
+
+    flist = apply_filters(rows_all, f)
+    n_done = sum(1 for r in flist if r["my"])
+    sess.data["filters_last"] = {k: (str(v) if k == "time" else v) for k, v in f.items()}
+
+    # ── 상단 요약 ──
+    top = st.columns([3, 1, 1, 1, 1])
+    with top[0]:
+        st.markdown(f"### {site.name} · {date}")
+        inf = f"Influx 조인 {stats.get('matched', 0)}/{stats.get('events', len(events))}" if stats else "Influx 미조인"
+        if st.session_state.get("influx_err"):
+            inf += f" · ⚠ {st.session_state.influx_err[:80]}"
+        st.caption(f"전체 {len(events)}건 · 필터 {len(flist)}건 · 검수 {n_done}/{len(flist)} · {inf} · 저장 {src}")
+    with top[1]:
+        st.metric("전체", len(events))
+    with top[2]:
+        st.metric("필터", len(flist))
+    with top[3]:
+        st.metric("검수됨", n_done)
+    with top[4]:
+        st.metric("오탐", sess.counts()["fp"])
+
+    if not flist:
+        st.info("필터 조건에 맞는 이벤트가 없습니다."); return
+
+    # ── 현재 이벤트 ──
+    idx = max(0, min(st.session_state.get("idx", 0), len(flist) - 1))
+    st.session_state.idx = idx
+    r = flist[idx]
+    ev: Event = r["ev"]
+
+    nav = st.columns([1, 6, 1])
+    with nav[0]:
+        if st.button("◀ 이전", disabled=idx == 0, width="stretch"):
+            st.session_state.idx = idx - 1; st.rerun()
+    with nav[1]:
+        opts = [f"{x['time']}  {x['bct']:6s}  {x['verdict'] or '-':8s}  {VERDICTS.get(x['my'], '·')}  {x['id']}" for x in flist]
+        pick = st.selectbox("이벤트로 이동", range(len(flist)), index=idx, format_func=lambda i: opts[i], label_visibility="collapsed")
+        if pick != idx:
+            st.session_state.idx = pick; st.rerun()
+    with nav[2]:
+        if st.button("다음 ▶", disabled=idx >= len(flist) - 1, width="stretch"):
+            st.session_state.idx = idx + 1; st.rerun()
+
+    mine = VERDICTS.get(r["my"], "")
+    badge = {"정탐": "🟢", "오탐": "🔴", "애매": "⚪"}.get(mine, "")
+    sc = " · ".join(f"{k} {v:.2f}" for k, v in (("Hook", r["hook"]), ("Helmet", r["helmet"]), ("Harness", r["harness"])) if v is not None)
+    st.markdown(
+        f"#### `{ev.id}` &nbsp; {idx + 1} / {len(flist)} &nbsp; {badge} {mine}\n"
+        f"{ev.time_str} · **{ev.bct}** ({site.bcts.get(ev.bct, '')}) · 판정 **{r['verdict'] or '-'}** · {sc or '점수 없음'} · 사유 {', '.join(r['reasons']) or '-'}"
+    )
+
+    vcols = st.columns(len(site.cameras))
+    for col, role in zip(vcols, site.cameras):
+        with col:
+            with st.spinner(f"{role} 영상 준비…"):
+                try:
+                    path, label = playable_path(site, ev, role)
+                except Exception as e:
+                    path, label = None, f"불러오기 실패: {e}"
+            st.caption(f"**{role}** · {label}")
+            if path:
+                st.video(str(path))
+            else:
+                st.warning("영상 없음")
+
+    # ── 판정 버튼 ──
+    b = st.columns([1, 1, 1, 1, 1, 3])
+    memo_key = f"memo_{ev.id}"
+    with b[5]:
+        memo = st.text_input("메모", value=r["memo"], key=memo_key, placeholder="한 줄 메모 (선택)")
+    def _set(v):
+        sess.set(ev.id, v, reviewer, st.session_state.get(memo_key, ""))
+        st.session_state.idx = min(idx + 1, len(flist) - 1) if idx < len(flist) - 1 else idx
+        st.rerun()
+    with b[0]:
+        if st.button(BTN["tp"], width="stretch"): _set("tp")
+    with b[1]:
+        if st.button(BTN["fp"], width="stretch", type="primary"): _set("fp")
+    with b[2]:
+        if st.button(BTN["unsure"], width="stretch"): _set("unsure")
+    with b[3]:
+        if st.button(BTN["skip"], width="stretch", disabled=idx >= len(flist) - 1):
+            st.session_state.idx = idx + 1; st.rerun()
+    with b[4]:
+        if st.button(BTN["undo"], width="stretch", disabled=not sess.data["history"]):
+            eid = sess.undo()
+            pos = next((i for i, x in enumerate(flist) if x["id"] == eid), None)
+            if pos is not None:
+                st.session_state.idx = pos
+            st.rerun()
+    if r["my"] and memo != r["memo"]:
+        sess.set_memo(ev.id, memo)
+    keyboard()
+
+    # ── 목록 ──
+    with st.expander(f"하루치 목록 (필터 {len(flist)}건)", expanded=False):
+        st.dataframe(
+            [{"#": i + 1, "time": x["time"], "bct": x["bct"], "verdict": x["verdict"], "hook": x["hook"], "helmet": x["helmet"],
+              "harness": x["harness"], "reasons": ", ".join(x["reasons"]), "내 판정": VERDICTS.get(x["my"], ""), "memo": x["memo"],
+              "tg": "○" if x["tg"] else "", "id": x["id"]} for i, x in enumerate(flist)],
+            width="stretch", hide_index=True, height=360)
+
+
+def export_fp(site, events: list[Event], sess: Session, root: Path, ids: list[str]) -> None:
+    idx = {e.id: e for e in events}
+    targets = [idx[i] for i in ids if i in idx]
+    if not targets:
+        st.warning("내보낼 이벤트가 목록에 없습니다 (새로고침 후 다시)."); return
+    c = client(site)
+    bar = st.progress(0.0, text="오탐 클립 다운로드 중…")
+    def prog(i, n, res):
+        bar.progress(i / n, text=f"{i}/{n} {res.event_id}")
+        sess.mark_exported(res.event_id, res.downloaded + res.skipped)
+    fetch_events(c, site.minio_bucket, targets, root, site.cameras, include_tg=False, progress=prog)
+    bar.progress(1.0, text=f"완료 · {len(targets)}건 → {root / site.code / sess.data['date']}")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+def main():
+    st_ = settings()
+    code = st.session_state.get("site_code")
+    if not code:
+        page_sites(); return
+    site = st_.site(code)
+    date = st.session_state.get("date")
+    if not date:
+        page_days(site); return
+    page_review(site, date)
+
+
+main()

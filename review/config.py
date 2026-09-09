@@ -71,6 +71,7 @@ class Settings:
     local_fallback: str
     timezone: str
     sites: dict[str, Site]
+    nas_secrets: dict = field(default_factory=dict)   # secrets.local.json 의 nas: {share, user, password}
 
     def site(self, code: str) -> Site:
         key = code.upper()
@@ -78,11 +79,27 @@ class Settings:
             raise SystemExit(f"알 수 없는 현장: {code}  (등록된 현장: {', '.join(self.sites)})")
         return self.sites[key]
 
+    def _try_connect_nas(self) -> bool:
+        """NAS 경로가 안 보이면 secrets.nas 자격으로 SMB 연결을 한 번 시도한다 (Windows net use)."""
+        nas = self.nas_secrets
+        if not (nas.get("share") and nas.get("user")) or os.name != "nt":
+            return False
+        if getattr(self, "_nas_tried", False):     # 프로세스당 한 번만 시도 (앱 재실행마다 net use 반복 방지)
+            return False
+        self._nas_tried = True
+        import subprocess
+        try:
+            subprocess.run(["net", "use", nas["share"], nas.get("password", ""), f"/user:{nas['user']}", "/persistent:yes"],
+                           capture_output=True, timeout=20)
+        except Exception:
+            return False
+        return os.path.isdir(self.nas_root)
+
     def resolve_out_root(self, override: str | None = None) -> tuple[Path, str]:
-        """저장 루트 결정: --out > NAS(접근 가능할 때) > 로컬 폴백. (경로, 출처) 반환."""
+        """저장 루트 결정: --out > NAS(접근 가능할 때, 필요하면 자동 연결) > 로컬 폴백. (경로, 출처) 반환."""
         if override:
             return Path(override), "--out"
-        if self.nas_root and os.path.isdir(self.nas_root):
+        if self.nas_root and (os.path.isdir(self.nas_root) or self._try_connect_nas()):
             return Path(self.nas_root), "NAS"
         fb = Path(self.local_fallback)
         if not fb.is_absolute():
@@ -123,4 +140,5 @@ def load(cfg_dir: str | os.PathLike | None = None) -> Settings:
         local_fallback=cfg.get("local_fallback", "../data/review"),
         timezone=cfg.get("timezone", "+09:00"),
         sites=sites,
+        nas_secrets=sec.get("nas", {}),
     )

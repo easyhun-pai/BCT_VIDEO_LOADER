@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -43,7 +46,10 @@ def fetch_events(client: Minio, bucket: str, events: list[Event], out_root: Path
             if dst.exists() and dst.stat().st_size > 0:
                 r.skipped.append(label)
                 continue
-            client.fget_object(bucket, key, str(dst))
+            # minio 는 dst 옆에 '<dst>.<hash>.part.minio' 임시파일을 만드는데, NAS/깊은 경로에서는
+            # Windows 260자 한계를 넘기 쉽다. 임시파일은 짧은 temp 디렉터리에 두고 완료 시 dst 로 옮긴다.
+            tmp = os.path.join(tempfile.gettempdir(), f"bctrv_{uuid.uuid4().hex}.part")
+            client.fget_object(bucket, key, str(dst), tmp_file_path=tmp)
             r.downloaded.append(label)
         results.append(r)
         if progress:

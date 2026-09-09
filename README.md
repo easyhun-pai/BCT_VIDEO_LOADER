@@ -17,7 +17,8 @@ scripts/
   find_storage.ps1      저장 경로 추적
   trigger_listener.py   텔레그램 트리거 연동
   review.bat            오탐 검수 세션 CLI 실행기
-review/                 오탐 검수 세션 CLI (P0: 현장 MinIO·Influx 읽기·다운로드)
+  review_app.bat        오탐 검수 세션 웹 실행기 (localhost:8501)
+review/                 오탐 검수 세션 — CLI(P0) + 로컬 웹 app.py(P1) + session.py
 config/sites.json       검수 대상 현장 목록
 data/                   수집 결과 (gitignore)
 logs/                   실행 로그 (gitignore)
@@ -144,6 +145,26 @@ scripts\review fetch HANIL 2026-09-07 --verdict denied --bct 7 --dry-run
 - **이벤트 ID** `{SITE}-{bct}-{yyyymmdd_HHMMSS}` = MinIO 키 `{bct}/{ts}/`. hook/ppe 는 스트림.
 - **접근** `sites.json` 의 `access`: `direct`(현장서버 ZeroTier IP) 또는 `tunnel`(엣지노드 SSH 포트포워딩으로 LAN IP 우회). 둘 다 읽기 전용.
 - **판정·점수** Influx `gate_event` (`allowed`, `hook/helmet/harness_score`). 사유는 Influx 에 없어 `thresholds` 로 유도 (엣지 `decision_engine` 과 동일 규칙).
-- **저장** `--out` > NAS `\\192.168.33.22\bct-review`(접근 가능할 때) > `data/review/` 순. 경로 `{site}/{yyyy-mm-dd}/{event_id}/{hook,ppe}.mp4` + `fetch.json`.
+- **저장** `--out` > NAS `\\192.168.33.22\DEV\2026_retrain_dataset`(접근 가능할 때) > `data/review/` 순. 경로 `{site}/{yyyy-mm-dd}/{event_id}/{hook,ppe}.mp4` + `fetch.json`.
 - **메모 형식** 그대로: `* 26/08/26` 줄 아래 `0946 7` (HHMM BCT). 매칭 실패·중복은 ±10분 후보와 함께 보고한다.
 - 현장 추가 = `sites.json` 항목 하나 + `secrets.local.json` 항목 하나. 현장 방문·현장 변경 없음.
+
+## 오탐 검수 세션 웹 (`review/app.py`, P1)
+
+검수자 PC에서 실행하는 로컬 웹(Streamlit). 브라우저는 `localhost:8501`, 상시 서버 없음.
+
+```powershell
+scripts\review_app.bat        # 실행 → 브라우저 자동 오픈
+```
+
+흐름: **현장 선택 → 일자 선택 → 하루치 목록·필터 → 검수 → 오탐 내보내기**
+
+- **필터** 시간대 · 판정(allowed/denied) · 사유 · BCT · Hook 점수 구간 · 클래스 미검출(점수 0) · 상태(미검수/검수됨/오탐만)
+- **검수 화면** hook·ppe 영상 나란히. `_tg/`(박스 있는 640) 우선, 없으면 학습용. 브라우저가 못 여는 코덱이면 ffmpeg 로 H.264 변환(로컬 캐시 `data/review/_cache/`).
+  버튼 정탐 / 오탐 / 애매 / 건너뛰기 / 되돌리기 + 한 줄 메모. 키보드 `←` 정탐 `→` 오탐 `↓` 애매 `Space` 건너뛰기 `Z` 되돌리기.
+- **판정 저장** 누를 때마다 `{저장루트}/{site}/{date}/session.json` 에 기록. 중간에 꺼도 이어서. SQLite 아님(SMB 동시쓰기 잠금 회피).
+- **오탐 내보내기** 사이드바 버튼. 오탐으로 찍은 이벤트의 학습용(박스 없음) mp4를 `{저장루트}/{site}/{date}/{event_id}/` 로 받고 `session.json` 의 `exported` 에 기록.
+- **저장 루트** `BCT_REVIEW_OUT` 환경변수 > NAS `\\192.168.33.22\DEV\2026_retrain_dataset` (안 붙어 있으면 `secrets.local.json` 의 `nas` 자격으로 `net use` 한 번 시도) > `data/review/`.
+- 검수자 이름은 사이드바에서. 세션 파일에 `by` 로 남는다.
+
+헤드리스 테스트: `streamlit.testing.v1.AppTest` 로 현장→일자→검수→판정→되돌리기→내보내기 흐름을 실제 현장 데이터에 대해 돌려 확인했다(2026-09-09, 514건).
