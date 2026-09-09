@@ -73,6 +73,10 @@ header[data-testid="stHeader"] { background:transparent; height:0; }
 .pm-ev code { font-family:ui-monospace,Consolas,monospace; font-size:13px; background:#EFF4FF; color:#1E3A8A; padding:1px 6px; border-radius:3px; }
 .pm-ev .v-tp { color:#16A34A; font-weight:700; } .pm-ev .v-fp { color:#DC2626; font-weight:700; } .pm-ev .v-un { color:#6B7280; font-weight:700; }
 .pm-ev .muted { color:#6B7280; }
+/* 액션 패널: 이벤트 카드 + 영상 + 판정 버튼 + 메모를 하늘색 박스로 묶음 */
+.st-key-action_panel { background:#EFF6FF; border:1px solid #BFDBFE; border-radius:12px; padding:16px 18px 12px; margin:4px 0 14px; }
+.st-key-action_panel .pm-ev { border-color:#BFDBFE; }
+.st-key-action_panel [data-testid="stCaptionContainer"] { color:#1E3A8A; }
 /* 판정 버튼 */
 .st-key-btn_tp button { border-color:#16A34A; color:#16A34A; font-weight:600; }
 .st-key-btn_tp button:hover { background:#DCFCE7; }
@@ -526,59 +530,60 @@ def page_review(site, date: str):
 
     mine = VERDICTS.get(r["my"], "")
     vcls = {"tp": "v-tp", "fp": "v-fp", "unsure": "v-un"}.get(r["my"], "muted")
-    has_row = r["hook"] is not None or r["helmet"] is not None or r["harness"] is not None
-    verdict_txt = VERDICT_KO.get(r["verdict"], VERDICT_KO[""])
-    marks = class_marks(r, site.thresholds) if has_row else ""
-    st.markdown(
-        f'<div class="pm-ev"><code>{ev.id}</code> &nbsp; <span class="muted">{idx + 1} / {len(flist)}</span> &nbsp; '
-        f'<span class="{vcls}">{mine or "미검수"}</span><br>'
-        f'{ev.time_str} · <b>{ev.bct.upper()}</b> &nbsp;·&nbsp; <b>{verdict_txt}</b>'
-        + (f' &nbsp;·&nbsp; {marks}' if marks else "") + '</div>',
-        unsafe_allow_html=True,
-    )
+    with st.container(key="action_panel"):
+        has_row = r["hook"] is not None or r["helmet"] is not None or r["harness"] is not None
+        verdict_txt = VERDICT_KO.get(r["verdict"], VERDICT_KO[""])
+        marks = class_marks(r, site.thresholds) if has_row else ""
+        st.markdown(
+            f'<div class="pm-ev"><code>{ev.id}</code> &nbsp; <span class="muted">{idx + 1} / {len(flist)}</span> &nbsp; '
+            f'<span class="{vcls}">{mine or "미검수"}</span><br>'
+            f'{ev.time_str} · <b>{ev.bct.upper()}</b> &nbsp;·&nbsp; <b>{verdict_txt}</b>'
+            + (f' &nbsp;·&nbsp; {marks}' if marks else "") + '</div>',
+            unsafe_allow_html=True,
+        )
 
-    vcols = st.columns(len(site.cameras))
-    for col, role in zip(vcols, site.cameras):
-        with col:
-            with st.spinner(f"{role} 영상 준비…"):
-                try:
-                    path, label = playable_path(site, ev, role)
-                except Exception as e:
-                    path, label = None, f"불러오기 실패: {e}"
-            st.caption(f"**{role}** · {label}")
-            if path:
-                st.video(str(path), autoplay=True, loop=True, muted=True)   # 자동·반복 재생, 컨트롤은 그대로
-            else:
-                st.warning("영상 없음")
+        vcols = st.columns(len(site.cameras))
+        for col, role in zip(vcols, site.cameras):
+            with col:
+                with st.spinner(f"{role} 영상 준비…"):
+                    try:
+                        path, label = playable_path(site, ev, role)
+                    except Exception as e:
+                        path, label = None, "영상을 불러오지 못했습니다"
+                st.caption(f"**{role}** · {label}")
+                if path:
+                    st.video(str(path), autoplay=True, loop=True, muted=True)   # 자동·반복 재생, 컨트롤은 그대로
+                else:
+                    st.warning("영상 없음")
 
-    # ── 판정 버튼 ──
-    b = st.columns([1, 1, 1, 1, 1, 3])
-    memo_key = f"memo_{ev.id}"
-    with b[5]:
-        memo = st.text_input("메모", value=r["memo"], key=memo_key, placeholder="한 줄 메모 (선택)")
-    def _set(v):
-        u = st.session_state.user
-        sess.set(ev.id, v, reviewer, st.session_state.get(memo_key, ""), ip=u.get("ip", ""))
-        st.session_state.idx = min(idx + 1, len(flist) - 1) if idx < len(flist) - 1 else idx
-        st.rerun()
-    with b[0]:
-        if st.button(BTN["tp"], key="btn_tp", width="stretch"): _set("tp")
-    with b[1]:
-        if st.button(BTN["fp"], key="btn_fp", width="stretch"): _set("fp")
-    with b[2]:
-        if st.button(BTN["unsure"], key="btn_unsure", width="stretch"): _set("unsure")
-    with b[3]:
-        if st.button(BTN["skip"], key="btn_skip", width="stretch", disabled=idx >= len(flist) - 1):
-            st.session_state.idx = idx + 1; st.rerun()
-    with b[4]:
-        if st.button(BTN["undo"], key="btn_undo", width="stretch", disabled=not sess.data["history"]):
-            eid = sess.undo()
-            pos = next((i for i, x in enumerate(flist) if x["id"] == eid), None)
-            if pos is not None:
-                st.session_state.idx = pos
+        # ── 판정 버튼 ──
+        b = st.columns([1, 1, 1, 1, 1, 3])
+        memo_key = f"memo_{ev.id}"
+        with b[5]:
+            memo = st.text_input("메모", value=r["memo"], key=memo_key, placeholder="한 줄 메모 (선택)")
+        def _set(v):
+            u = st.session_state.user
+            sess.set(ev.id, v, reviewer, st.session_state.get(memo_key, ""), ip=u.get("ip", ""))
+            st.session_state.idx = min(idx + 1, len(flist) - 1) if idx < len(flist) - 1 else idx
             st.rerun()
-    if r["my"] and memo != r["memo"]:
-        sess.set_memo(ev.id, memo)
+        with b[0]:
+            if st.button(BTN["tp"], key="btn_tp", width="stretch"): _set("tp")
+        with b[1]:
+            if st.button(BTN["fp"], key="btn_fp", width="stretch"): _set("fp")
+        with b[2]:
+            if st.button(BTN["unsure"], key="btn_unsure", width="stretch"): _set("unsure")
+        with b[3]:
+            if st.button(BTN["skip"], key="btn_skip", width="stretch", disabled=idx >= len(flist) - 1):
+                st.session_state.idx = idx + 1; st.rerun()
+        with b[4]:
+            if st.button(BTN["undo"], key="btn_undo", width="stretch", disabled=not sess.data["history"]):
+                eid = sess.undo()
+                pos = next((i for i, x in enumerate(flist) if x["id"] == eid), None)
+                if pos is not None:
+                    st.session_state.idx = pos
+                st.rerun()
+        if r["my"] and memo != r["memo"]:
+            sess.set_memo(ev.id, memo)
     keyboard()
 
     # ── 목록 ──
