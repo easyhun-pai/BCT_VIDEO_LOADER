@@ -11,5 +11,8 @@ if not exist "%USERPROFILE%\.streamlit\credentials.toml" (
   >"%USERPROFILE%\.streamlit\credentials.toml" echo [general]
   >>"%USERPROFILE%\.streamlit\credentials.toml" echo email = ""
 )
-"%~dp0..\.venv\Scripts\python.exe" -m streamlit run "%~dp0..\review\app.py" --server.port 8501 %*
+rem Run from the repo root so Streamlit picks up .streamlit\config.toml (theme).
+pushd "%~dp0.."
+".venv\Scripts\python.exe" -m streamlit run "review\app.py" --server.port 8501 %*
+popd
 endlocal

@@ -27,10 +27,68 @@ from review.download import fetch_events  # noqa: E402
 from review.influx import join_events, query_day, reasons_from  # noqa: E402
 from review.session import VERDICTS, Session  # noqa: E402
 
-st.set_page_config(page_title="BCT 오탐 검수 세션", page_icon="🔎", layout="wide")   # 🪝 는 Windows 기본 폰트에 없어 □ 로 보임
+APP_NAME = "오탐 검수 플랫폼"
+ORG = "Paimedialab"
+st.set_page_config(page_title=f"{ORG} {APP_NAME}", page_icon="🔎", layout="wide")
 
 PLAYABLE = {"h264", "avc1", "vp9", "vp8", "av1", "hevc"}   # 브라우저가 재생하는 코덱 (hevc 는 환경에 따라)
 BTN = {"tp": "정탐 ←", "fp": "오탐 →", "unsure": "애매 ↓", "skip": "건너뛰기 ␣", "undo": "되돌리기 Z"}
+
+CSS = """
+<style>
+/* Streamlit 기본 장식 제거 */
+#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"],
+.stDeployButton, [data-testid="stAppDeployButton"] { display:none !important; }
+header[data-testid="stHeader"] { background:transparent; height:0; }
+.block-container { padding-top:1.1rem; padding-bottom:3rem; max-width:1280px; }
+/* 상단 헤더 */
+.pm-head { display:flex; align-items:baseline; gap:14px; border-bottom:2px solid #1B1F24; padding:2px 0 10px; margin:0 0 18px; }
+.pm-head .eyebrow { font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; color:#8A5A12; font-weight:700; }
+.pm-head h1 { font-size:21px; margin:0; font-weight:700; letter-spacing:-.01em; }
+.pm-head .crumb { margin-left:auto; color:#7A828C; font-size:13px; }
+/* 상태 알약 */
+.pm-pills { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }
+.pm-pill { border:1px solid #D9DCD6; border-radius:999px; padding:2px 12px; font-size:13px; background:#F7F8F6; color:#4A5058; white-space:nowrap; }
+.pm-pill b { color:#1B1F24; font-weight:600; }
+.pm-pill.fp b { color:#B2413F; } .pm-pill.ok b { color:#2F7A4E; } .pm-pill.warn { border-color:#E3B341; background:#FBF3DF; }
+/* 현재 이벤트 카드 */
+.pm-ev { border:1px solid #D9DCD6; border-left:4px solid #B7791F; background:#FFFFFF; padding:10px 14px; margin:4px 0 10px; font-size:14px; line-height:1.7; }
+.pm-ev code { font-family:ui-monospace,Consolas,monospace; font-size:13px; background:#F3F3EF; padding:1px 6px; border-radius:3px; }
+.pm-ev .v-tp { color:#2F7A4E; font-weight:700; } .pm-ev .v-fp { color:#B2413F; font-weight:700; } .pm-ev .v-un { color:#7A828C; font-weight:700; }
+.pm-ev .muted { color:#7A828C; }
+/* 판정 버튼 */
+.st-key-btn_tp button { border-color:#2F7A4E; color:#2F7A4E; font-weight:600; }
+.st-key-btn_tp button:hover { background:#DDEFE3; }
+.st-key-btn_fp button { background:#B2413F; border-color:#B2413F; color:#FFFFFF; font-weight:600; }
+.st-key-btn_fp button:hover { background:#9A3634; border-color:#9A3634; }
+.st-key-btn_unsure button { border-color:#7A828C; color:#4A5058; font-weight:600; }
+.st-key-btn_skip button, .st-key-btn_undo button { color:#4A5058; }
+/* 현장 카드 */
+.st-key-sitecard [data-testid="stVerticalBlockBorderWrapper"] { background:#FFFFFF; }
+div[data-testid="stVerticalBlockBorderWrapper"] { border-color:#D9DCD6 !important; }
+/* 사이드바 */
+section[data-testid="stSidebar"] { background:#F7F8F6; border-right:1px solid #D9DCD6; }
+section[data-testid="stSidebar"] .block-container { padding-top:1rem; }
+h3 { font-size:17px !important; }
+</style>
+"""
+
+
+def inject_css() -> None:
+    st.markdown(CSS, unsafe_allow_html=True)
+
+
+def header(crumb: str = "") -> None:
+    st.markdown(
+        f'<div class="pm-head"><span class="eyebrow">{ORG}</span><h1>{APP_NAME}</h1><span class="crumb">{crumb}</span></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def pills(items: list[tuple[str, str, str]]) -> None:
+    """[(라벨, 값, css클래스)] → 알약 한 줄."""
+    html = "".join(f'<span class="pm-pill {cls}">{lab} <b>{val}</b></span>' for lab, val, cls in items)
+    st.markdown(f'<div class="pm-pills">{html}</div>', unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -220,7 +278,7 @@ def _keyboard_html():
 # ══════════════════════════════════════════════════════════════════════════
 def page_sites():
     st_ = settings()
-    st.title("BCT 오탐 검수 세션")
+    header("현장 선택")
     root, src = out_root()
     if src == "NAS":
         st.caption(f"저장 루트: `{root}`  (NAS)")
@@ -252,7 +310,7 @@ def page_sites():
 # 페이지 2 · 일자 선택
 # ══════════════════════════════════════════════════════════════════════════
 def page_days(site):
-    st.title(f"{site.name} · 일자 선택")
+    header(f"{site.name} · 일자 선택")
     if st.button("← 현장 선택"):
         st.session_state.pop("site_code", None); st.rerun()
     with st.spinner("MinIO 에서 날짜 목록을 읽는 중…"):
@@ -344,21 +402,15 @@ def page_review(site, date: str):
     sess.data["filters_last"] = {k: (str(v) if k == "time" else v) for k, v in f.items()}
 
     # ── 상단 요약 ──
-    top = st.columns([3, 1, 1, 1, 1])
-    with top[0]:
-        st.markdown(f"### {site.name} · {date}")
-        inf = f"Influx 조인 {stats.get('matched', 0)}/{stats.get('events', len(events))}" if stats else "Influx 미조인"
-        if st.session_state.get("influx_err"):
-            inf += f" · ⚠ {st.session_state.influx_err[:80]}"
-        st.caption(f"전체 {len(events)}건 · 필터 {len(flist)}건 · 검수 {n_done}/{len(flist)} · {inf} · 저장 {src}")
-    with top[1]:
-        st.metric("전체", len(events))
-    with top[2]:
-        st.metric("필터", len(flist))
-    with top[3]:
-        st.metric("검수됨", n_done)
-    with top[4]:
-        st.metric("오탐", sess.counts()["fp"])
+    header(f"{site.name} · {date}")
+    c = sess.counts()
+    inf_val = f"{stats.get('matched', 0)}/{stats.get('events', len(events))}" if stats else "미조인"
+    items = [("전체", f"{len(events)}", ""), ("필터", f"{len(flist)}", ""), ("검수", f"{n_done}/{len(flist)}", ""),
+             ("정탐", f"{c['tp']}", "ok"), ("오탐", f"{c['fp']}", "fp"), ("애매", f"{c['unsure']}", ""),
+             ("Influx 조인", inf_val, "warn" if st.session_state.get("influx_err") else ""), ("저장", src, "" if src == "NAS" else "warn")]
+    pills(items)
+    if st.session_state.get("influx_err"):
+        st.warning(f"Influx 조회 실패 — 판정·점수 없이 표시 중: {st.session_state.influx_err[:120]}")
 
     if not flist:
         st.info("필터 조건에 맞는 이벤트가 없습니다."); return
@@ -383,11 +435,14 @@ def page_review(site, date: str):
             st.session_state.idx = idx + 1; st.rerun()
 
     mine = VERDICTS.get(r["my"], "")
-    badge = {"정탐": "🟢", "오탐": "🔴", "애매": "⚪"}.get(mine, "")
+    vcls = {"tp": "v-tp", "fp": "v-fp", "unsure": "v-un"}.get(r["my"], "muted")
     sc = " · ".join(f"{k} {v:.2f}" for k, v in (("Hook", r["hook"]), ("Helmet", r["helmet"]), ("Harness", r["harness"])) if v is not None)
     st.markdown(
-        f"#### `{ev.id}` &nbsp; {idx + 1} / {len(flist)} &nbsp; {badge} {mine}\n"
-        f"{ev.time_str} · **{ev.bct}** ({site.bcts.get(ev.bct, '')}) · 판정 **{r['verdict'] or '-'}** · {sc or '점수 없음'} · 사유 {', '.join(r['reasons']) or '-'}"
+        f'<div class="pm-ev"><code>{ev.id}</code> &nbsp; <span class="muted">{idx + 1} / {len(flist)}</span> &nbsp; '
+        f'<span class="{vcls}">{mine or "미검수"}</span><br>'
+        f'{ev.time_str} · <b>{ev.bct}</b> <span class="muted">({site.bcts.get(ev.bct, "")})</span> · 판정 <b>{r["verdict"] or "-"}</b> · '
+        f'{sc or "점수 없음"} · 사유 <b>{", ".join(r["reasons"]) or "-"}</b></div>',
+        unsafe_allow_html=True,
     )
 
     vcols = st.columns(len(site.cameras))
@@ -414,16 +469,16 @@ def page_review(site, date: str):
         st.session_state.idx = min(idx + 1, len(flist) - 1) if idx < len(flist) - 1 else idx
         st.rerun()
     with b[0]:
-        if st.button(BTN["tp"], width="stretch"): _set("tp")
+        if st.button(BTN["tp"], key="btn_tp", width="stretch"): _set("tp")
     with b[1]:
-        if st.button(BTN["fp"], width="stretch", type="primary"): _set("fp")
+        if st.button(BTN["fp"], key="btn_fp", width="stretch"): _set("fp")
     with b[2]:
-        if st.button(BTN["unsure"], width="stretch"): _set("unsure")
+        if st.button(BTN["unsure"], key="btn_unsure", width="stretch"): _set("unsure")
     with b[3]:
-        if st.button(BTN["skip"], width="stretch", disabled=idx >= len(flist) - 1):
+        if st.button(BTN["skip"], key="btn_skip", width="stretch", disabled=idx >= len(flist) - 1):
             st.session_state.idx = idx + 1; st.rerun()
     with b[4]:
-        if st.button(BTN["undo"], width="stretch", disabled=not sess.data["history"]):
+        if st.button(BTN["undo"], key="btn_undo", width="stretch", disabled=not sess.data["history"]):
             eid = sess.undo()
             pos = next((i for i, x in enumerate(flist) if x["id"] == eid), None)
             if pos is not None:
@@ -458,6 +513,7 @@ def export_fp(site, events: list[Event], sess: Session, root: Path, ids: list[st
 
 # ══════════════════════════════════════════════════════════════════════════
 def main():
+    inject_css()
     st_ = settings()
     code = st.session_state.get("site_code")
     if not code:
