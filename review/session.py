@@ -59,10 +59,17 @@ class Session:
     def verdict(self, event_id: str) -> dict | None:
         return self.data["verdicts"].get(event_id)
 
-    def set(self, event_id: str, verdict: str, reviewer: str, memo: str = "") -> None:
+    def note_reviewer(self, reviewer: str, ip: str = "") -> None:
+        """이 세션을 연 검수자(계정·접속 IP)를 기록. 공통 계정이라 IP 로 사람을 구분한다."""
+        lst = self.data.setdefault("reviewers", [])
+        if not any(r.get("by") == reviewer and r.get("ip") == ip for r in lst):
+            lst.append({"by": reviewer, "ip": ip, "at": _now()})
+            self.save()
+
+    def set(self, event_id: str, verdict: str, reviewer: str, memo: str = "", ip: str = "") -> None:
         if verdict not in VERDICTS:
             raise ValueError(verdict)
-        self.data["verdicts"][event_id] = {"verdict": verdict, "at": _now(), "by": reviewer, "memo": memo}
+        self.data["verdicts"][event_id] = {"verdict": verdict, "at": _now(), "by": reviewer, "ip": ip, "memo": memo}
         hist = self.data["history"]
         if event_id in hist:
             hist.remove(event_id)

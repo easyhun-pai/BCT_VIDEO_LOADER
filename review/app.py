@@ -277,6 +277,29 @@ def _keyboard_html():
 # ══════════════════════════════════════════════════════════════════════════
 # 로그인
 # ══════════════════════════════════════════════════════════════════════════
+def client_ip() -> str:
+    """접속 IP. 공통 계정을 사람별로 구분하는 근거. localhost 접속이면 127.0.0.1."""
+    try:
+        ip = st.context.ip_address           # Streamlit ≥1.44. localhost 면 None
+    except Exception:
+        ip = None
+    if not isinstance(ip, str) or not ip.strip():   # 헤드리스 테스트에선 Mock 이 온다
+        return "127.0.0.1"
+    return ip.strip()
+
+
+def log_login(user: dict) -> None:
+    """저장 루트에 _logins.jsonl 한 줄 추가 (누가·어디서·언제)."""
+    try:
+        root, _ = out_root()
+        root.mkdir(parents=True, exist_ok=True)
+        rec = {"at": datetime.now().isoformat(timespec="seconds"), "id": user["id"], "ip": user["ip"]}
+        with open(root / "_logins.jsonl", "a", encoding="utf-8") as f:
+            f.write(__import__("json").dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def page_login():
     st_ = settings()
     header("로그인")
@@ -292,8 +315,11 @@ def page_login():
             if st.button("로그인", key="btn_login", type="primary", width="stretch"):
                 u = verify_user(st_, uid, pw)
                 if u:
+                    u["ip"] = client_ip()
+                    u["at"] = datetime.now().isoformat(timespec="seconds")
                     st.session_state.user = u
                     st.session_state.pop("login_pw", None)
+                    log_login(u)
                     st.rerun()
                 st.error("ID 또는 비밀번호가 맞지 않습니다.")
         st.caption("계정은 `scripts\\review user add <id>` 로 추가·변경합니다.")
@@ -307,6 +333,7 @@ def sidebar_user():
         c1, c2 = st.columns([2, 1])
         with c1:
             st.markdown(f"👤 **{u['name']}**")
+            st.caption(u.get("ip", ""))
         with c2:
             if st.button("로그아웃", key="btn_logout", width="stretch"):
                 for k in ("user", "site_code", "date", "loaded", "events", "matched", "stats", "sess", "idx"):
@@ -399,9 +426,11 @@ def page_review(site, date: str):
                     st.session_state.pop("date", None); st.rerun()
                 return
         acc = access(site)
+        sess0 = Session.open(root, site.code, date, {"access": acc.mode, "minio": acc.minio_endpoint})
+        u = st.session_state.user
+        sess0.note_reviewer(u["id"], u.get("ip", ""))
         st.session_state.update(events=events, matched=matched, stats=stats, influx_err=err,
-                                sess=Session.open(root, site.code, date, {"access": acc.mode, "minio": acc.minio_endpoint}),
-                                loaded=(site.code, date), idx=0)
+                                sess=sess0, loaded=(site.code, date), idx=0)
     events: list[Event] = st.session_state.events
     matched: dict = st.session_state.matched
     stats: dict = st.session_state.stats
@@ -507,7 +536,8 @@ def page_review(site, date: str):
     with b[5]:
         memo = st.text_input("메모", value=r["memo"], key=memo_key, placeholder="한 줄 메모 (선택)")
     def _set(v):
-        sess.set(ev.id, v, reviewer, st.session_state.get(memo_key, ""))
+        u = st.session_state.user
+        sess.set(ev.id, v, reviewer, st.session_state.get(memo_key, ""), ip=u.get("ip", ""))
         st.session_state.idx = min(idx + 1, len(flist) - 1) if idx < len(flist) - 1 else idx
         st.rerun()
     with b[0]:

@@ -172,5 +172,7 @@ scripts\review_app.bat        # cmd 용 (Ctrl+C 시 "일괄 작업을 끝내시�
   scripts\review user list
   ```
   로그인 ID가 곧 검수자라 세션 파일의 `by` 에 남는다. 페이지를 새로고침하면 다시 로그인한다.
+  공통 계정 하나(`admin`)를 쓰므로 **접속 IP**로 사람을 구분한다: 로그인마다 `{저장루트}/_logins.jsonl` 한 줄,
+  세션 파일 `reviewers` 목록, 판정 한 건마다 `ip`. localhost 접속이면 `127.0.0.1`.
 
 헤드리스 테스트: `streamlit.testing.v1.AppTest` 로 현장→일자→검수→판정→되돌리기→내보내기 흐름을 실제 현장 데이터에 대해 돌려 확인했다(2026-09-09, 514건).
