@@ -276,21 +276,34 @@ def keyboard():
 
 
 def playback_rate(rate: float):
-    """모든 <video> 의 재생 속도를 맞춘다. 새로 생기는 플레이어와 사용자가 다시 재생할 때도 유지."""
+    """모든 <video> 의 재생 속도를 맞춘다.
+
+    컴포넌트 iframe 은 화면이 다시 그려질 때 버려지므로, 거기서 등록한 감시자는 죽는다.
+    → 감시 스크립트는 부모 창에 한 번만 심고(<script> 주입), 매 렌더에는 목표 속도만 갱신한다.
+    """
     try:
         components.html(f"""
 <script>
 (function(){{
-  const doc = window.parent.document;
-  doc.__bctRate = {float(rate)};
-  const apply = () => doc.querySelectorAll('video').forEach(v => {{ if (v.playbackRate !== doc.__bctRate) v.playbackRate = doc.__bctRate; }});
-  apply(); setTimeout(apply, 300); setTimeout(apply, 1500);
-  if (!doc.__bctRateObs) {{
-    doc.__bctRateObs = new MutationObserver(apply);
-    doc.__bctRateObs.observe(doc.body, {{childList: true, subtree: true}});
-    doc.addEventListener('play', (e) => {{ if (e.target && e.target.tagName === 'VIDEO') e.target.playbackRate = doc.__bctRate; }}, true);
-    doc.addEventListener('loadedmetadata', (e) => {{ if (e.target && e.target.tagName === 'VIDEO') e.target.playbackRate = doc.__bctRate; }}, true);
+  const w = window.parent, doc = w.document;
+  w.__bctRate = {float(rate)};
+  if (!w.__bctRateInstalled) {{
+    w.__bctRateInstalled = true;
+    const s = doc.createElement('script');
+    s.textContent = `
+      (function(){{
+        const apply = () => document.querySelectorAll('video').forEach(v => {{
+          if (window.__bctRate && v.playbackRate !== window.__bctRate) v.playbackRate = window.__bctRate;
+        }});
+        window.__bctApplyRate = apply;
+        new MutationObserver(apply).observe(document.body, {{childList: true, subtree: true}});
+        ['play', 'loadedmetadata', 'canplay'].forEach(ev =>
+          document.addEventListener(ev, e => {{ if (e.target && e.target.tagName === 'VIDEO') apply(); }}, true));
+        setInterval(apply, 700);
+      }})();`;
+    doc.head.appendChild(s);
   }}
+  if (w.__bctApplyRate) w.__bctApplyRate();
 }})();
 </script>""", height=0)
     except Exception:
@@ -536,6 +549,19 @@ def page_review(site, date: str):
 
     if not flist:
         st.info("필터 조건에 맞는 이벤트가 없습니다."); return
+
+    # ── 이어하기: 세션을 처음 열면 마지막으로 판정한 이벤트 바로 다음부터 ──
+    if st.session_state.get("idx_init") != (site.code, date):
+        st.session_state.idx_init = (site.code, date)
+        start = 0
+        hist = sess.data.get("history") or []
+        if hist:
+            pos = next((i for i, x in enumerate(flist) if x["id"] == hist[-1]), None)
+            if pos is not None:
+                start = min(pos + 1, len(flist) - 1)
+            else:                                   # 마지막 판정이 필터 밖이면 첫 미검수로
+                start = next((i for i, x in enumerate(flist) if not x["my"]), 0)
+        st.session_state.idx = start
 
     # ── 현재 이벤트 ──
     idx = max(0, min(st.session_state.get("idx", 0), len(flist) - 1))
