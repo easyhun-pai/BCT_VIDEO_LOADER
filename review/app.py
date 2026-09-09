@@ -484,9 +484,10 @@ def page_review(site, date: str):
         c = sess.counts()
         st.markdown("**세션**")
         st.caption(f"정탐 {c['tp']} · 오탐 {c['fp']} · 애매 {c['unsure']} · 내보냄 {c['exported']}")
-        pend = sess.unexported_fp_ids()
-        if st.button(f"📦 오탐 내보내기 ({len(pend)}건)", disabled=not pend, width="stretch", type="primary"):
-            export_fp(site, events, sess, root, pend)
+        pend = sess.unexported_ids()
+        n_pend = sum(len(v) for v in pend.values())
+        if st.button(f"📦 영상 내보내기 (오탐 {len(pend['fp'])} · 애매 {len(pend['unsure'])})", disabled=not n_pend, width="stretch", type="primary"):
+            export_clips(site, events, sess, root, pend)
             st.rerun()
 
     flist = apply_filters(rows_all, f)
@@ -596,18 +597,24 @@ def page_review(site, date: str):
             width="stretch", hide_index=True, height=360)
 
 
-def export_fp(site, events: list[Event], sess: Session, root: Path, ids: list[str]) -> None:
+def export_clips(site, events: list[Event], sess: Session, root: Path, pend: dict[str, list[str]]) -> None:
+    """오탐 → fp/, 애매 → unsure/ 하위 폴더로 원본 영상을 받는다. 정탐은 기록만."""
     idx = {e.id: e for e in events}
-    targets = [idx[i] for i in ids if i in idx]
-    if not targets:
+    jobs = [(v, [idx[i] for i in ids if i in idx]) for v, ids in pend.items() if ids]
+    total = sum(len(t) for _, t in jobs)
+    if not total:
         st.warning("내보낼 이벤트가 없습니다. 새로고침 후 다시 시도해 주세요."); return
     c = client(site)
-    bar = st.progress(0.0, text="오탐 클립 다운로드 중…")
-    def prog(i, n, res):
-        bar.progress(i / n, text=f"{i}/{n} {res.event_id}")
-        sess.mark_exported(res.event_id, res.downloaded + res.skipped)
-    fetch_events(c, site.minio_bucket, targets, root, site.cameras, include_tg=False, progress=prog)
-    bar.progress(1.0, text=f"완료 · {len(targets)}건 저장됨")
+    bar = st.progress(0.0, text="영상 다운로드 중…")
+    done = 0
+    for verdict, targets in jobs:
+        def prog(i, n, res, _v=verdict):
+            nonlocal done
+            done += 1
+            bar.progress(done / total, text=f"{done}/{total} · {VERDICTS[_v]} · {res.event_id}")
+            sess.mark_exported(res.event_id, [f"{_v}/{f}" for f in res.downloaded + res.skipped])
+        fetch_events(c, site.minio_bucket, targets, root, site.cameras, include_tg=False, progress=prog, subdir=verdict)
+    bar.progress(1.0, text=f"완료 · {total}건 저장됨")
 
 
 # ══════════════════════════════════════════════════════════════════════════

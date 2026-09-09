@@ -99,11 +99,20 @@ class Session:
         self.data["exported"][event_id] = {"at": _now(), "files": files}
         self.save()
 
+    EXPORT_VERDICTS = ("fp", "unsure")     # 영상을 내보내는 판정. 정탐은 기록만.
+
+    def ids_by_verdict(self, verdict: str) -> list[str]:
+        return [k for k, v in self.data["verdicts"].items() if v.get("verdict") == verdict]
+
     def fp_ids(self) -> list[str]:
-        return [k for k, v in self.data["verdicts"].items() if v.get("verdict") == "fp"]
+        return self.ids_by_verdict("fp")
+
+    def unexported_ids(self) -> dict[str, list[str]]:
+        """{verdict: [event_id...]} — 오탐·애매 중 아직 영상을 안 받은 것."""
+        return {v: [k for k in self.ids_by_verdict(v) if k not in self.data["exported"]] for v in self.EXPORT_VERDICTS}
 
     def unexported_fp_ids(self) -> list[str]:
-        return [k for k in self.fp_ids() if k not in self.data["exported"]]
+        return self.unexported_ids()["fp"]
 
     # ── 집계 ──
     def counts(self) -> dict[str, int]:

@@ -28,10 +28,11 @@ class FetchResult:
 
 
 def fetch_events(client: Minio, bucket: str, events: list[Event], out_root: Path,
-                 roles: list[str], include_tg: bool = False, progress=None) -> list[FetchResult]:
+                 roles: list[str], include_tg: bool = False, progress=None, subdir: str = "") -> list[FetchResult]:
+    """subdir 를 주면 {out}/{site}/{date}/{subdir}/{event_id}/ 로 받는다 (예: 판정별 fp/, unsure/)."""
     results: list[FetchResult] = []
     for i, ev in enumerate(events, 1):
-        d = out_root / ev.site / ev.date / ev.id
+        d = out_root / ev.site / ev.date / subdir / ev.id if subdir else out_root / ev.site / ev.date / ev.id
         d.mkdir(parents=True, exist_ok=True)
         r = FetchResult(event_id=ev.id, dir=d)
         wants: list[tuple[str, str | None, Path]] = []
