@@ -164,12 +164,11 @@ scripts\review_app.bat        # cmd 용 (Ctrl+C 시 "일괄 작업을 끝내시�
 - **검수 화면** hook·ppe 영상 나란히. `_tg/`(박스 있는 640) 우선, 없으면 학습용. 브라우저가 못 여는 코덱이면 ffmpeg 로 H.264 변환(로컬 캐시 `data/review/_cache/`).
   버튼 정탐 / 오탐 / 애매 / 건너뛰기 / 되돌리기 + 한 줄 메모. 키보드 `←` 정탐 `→` 오탐 `↓` 애매 `Space` 건너뛰기 `Z` 되돌리기.
 - **판정 저장** 누를 때마다 `{저장루트}/{site}/{date}/session.json` 에 기록. 중간에 꺼도 이어서. SQLite 아님(SMB 동시쓰기 잠금 회피).
-- **영상 내보내기** 사이드바 버튼. 오탐·애매로 찍은 이벤트의 학습용(박스 없음) mp4를 판정별 폴더로 받는다.
-  정탐은 `session.json` 에 기록만 하고 영상은 받지 않는다.
+- **영상 내보내기** 사이드바 버튼. 오탐·애매로 찍은 이벤트의 학습용(박스 없음) mp4를 받는다.
+  정탐은 `session.json` 에 기록만 하고 영상은 받지 않는다. 오탐/애매 구분은 `session.json` 의 `verdicts` 로.
   ```
-  {저장루트}/{site}/{date}/session.json        정탐·오탐·애매 판정 전부 (검수자·IP·시각·메모)
-  {저장루트}/{site}/{date}/fp/{event_id}/       오탐 영상 hook.mp4 · ppe.mp4
-  {저장루트}/{site}/{date}/unsure/{event_id}/   애매 영상
+  {저장루트}/{site}/{date}/session.json      정탐·오탐·애매 판정 전부 (검수자·IP·시각·메모)
+  {저장루트}/{site}/{date}/{event_id}/       오탐·애매 영상 hook.mp4 · ppe.mp4
   ```
 - **저장 루트** `BCT_REVIEW_OUT` 환경변수 > NAS `\\192.168.33.22\DEV\2026_retrain_dataset` (안 붙어 있으면 `secrets.local.json` 의 `nas` 자격으로 `net use` 한 번 시도) > `data/review/`.
 - **로그인** 첫 화면에서 ID/비밀번호. 계정은 `config/users.local.json`(gitignore)에 PBKDF2 해시로 저장.
