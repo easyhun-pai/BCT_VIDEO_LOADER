@@ -19,10 +19,14 @@ $cred  = Join-Path $stDir 'credentials.toml'
 if (-not (Test-Path $stDir)) { New-Item -ItemType Directory -Path $stDir | Out-Null }
 if (-not (Test-Path $cred))  { "[general]`nemail = `"`"" | Set-Content -Path $cred -Encoding ascii }
 
-# 저장소 루트에서 실행해야 .streamlit\config.toml(테마)을 읽는다
+# 저장소 루트에서 실행해야 .streamlit\config.toml(테마)을 읽는다.
+# PowerShell 의 Set-Location 은 자식 프로세스의 작업 폴더까지 보장하지 않으므로
+# .NET 프로세스 cwd 도 같이 맞추고, 앱 경로는 절대경로로 넘긴다.
+$app = Join-Path $root 'review\app.py'
 Push-Location $root
+[Environment]::CurrentDirectory = $root
 try {
-    & $py -m streamlit run 'review\app.py' --server.port 8501 @Rest
+    & $py -m streamlit run $app --server.port 8501 @Rest
 }
 finally {
     Pop-Location
