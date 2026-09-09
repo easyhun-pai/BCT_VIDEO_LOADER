@@ -73,10 +73,19 @@ header[data-testid="stHeader"] { background:transparent; height:0; }
 .pm-ev code { font-family:ui-monospace,Consolas,monospace; font-size:13px; background:#EFF4FF; color:#1E3A8A; padding:1px 6px; border-radius:3px; }
 .pm-ev .v-tp { color:#16A34A; font-weight:700; } .pm-ev .v-fp { color:#DC2626; font-weight:700; } .pm-ev .v-un { color:#6B7280; font-weight:700; }
 .pm-ev .muted { color:#6B7280; }
-/* 액션 패널: 이벤트 카드 + 영상 + 판정 버튼 + 메모를 하늘색 박스로 묶음 */
+/* 액션 패널: 이벤트 카드 + 영상 + 판정 버튼 + 메모를 한 박스로 묶음. 미검수=하늘색, 판정하면 그 색으로 */
 .st-key-action_panel { background:#EFF6FF; border:1px solid #BFDBFE; border-radius:12px; padding:16px 18px 12px; margin:4px 0 14px; }
 .st-key-action_panel .pm-ev { border-color:#BFDBFE; }
 .st-key-action_panel [data-testid="stCaptionContainer"] { color:#1E3A8A; }
+.st-key-action_panel_tp { background:#F0FDF4; border-color:#BBF7D0; }
+.st-key-action_panel_tp .pm-ev { border-color:#BBF7D0; }
+.st-key-action_panel_tp [data-testid="stCaptionContainer"] { color:#166534; }
+.st-key-action_panel_fp { background:#FEF2F2; border-color:#FECACA; }
+.st-key-action_panel_fp .pm-ev { border-color:#FECACA; }
+.st-key-action_panel_fp [data-testid="stCaptionContainer"] { color:#991B1B; }
+.st-key-action_panel_unsure { background:#F8FAFC; border-color:#E2E8F0; }
+.st-key-action_panel_unsure .pm-ev { border-color:#E2E8F0; }
+.st-key-action_panel_unsure [data-testid="stCaptionContainer"] { color:#475569; }
 /* 판정 버튼 */
 .st-key-btn_tp button { border-color:#16A34A; color:#16A34A; font-weight:600; }
 .st-key-btn_tp button:hover { background:#DCFCE7; }
@@ -364,17 +373,23 @@ def page_login():
             if not list_users(st_):
                 st.error("등록된 계정이 없습니다. 관리자에게 문의하세요.")
                 return
-            uid = st.text_input("ID", key="login_id", autocomplete="username")
-            pw = st.text_input("비밀번호", type="password", key="login_pw", autocomplete="current-password")
-            if st.button("로그인", key="btn_login", type="primary", width="stretch"):
+            # 폼으로 묶으면 어느 칸에서든 Enter 로 제출되고, 입력값이 제출 시점에 함께 확정된다.
+            # (버튼만 쓰면 값 확정과 클릭이 따로 처리돼 방금 친 값이 반영되지 않는 경우가 있다)
+            with st.form("login_form", border=False, enter_to_submit=True):
+                uid = st.text_input("ID", key="login_id", autocomplete="username")
+                pw = st.text_input("비밀번호", type="password", key="login_pw", autocomplete="current-password")
+                submitted = st.form_submit_button("로그인", key="btn_login", type="primary", width="stretch")
+            if submitted:
                 u = verify_user(st_, uid, pw)
                 if u:
                     u["ip"] = client_ip()
                     u["at"] = datetime.now().isoformat(timespec="seconds")
                     st.session_state.user = u
-                    st.session_state.pop("login_pw", None)
+                    st.session_state.pop("login_err", None)
                     log_login(u)
                     st.rerun()
+                st.session_state.login_err = True
+            if st.session_state.get("login_err"):
                 st.error("ID 또는 비밀번호가 맞지 않습니다.")
 
 
@@ -508,8 +523,27 @@ def page_review(site, date: str):
                                 format_func=lambda x: f"{x:g}x", key="rate")
         reviewer = st.session_state.user["id"]           # 로그인 ID 가 곧 검수자 (session.json 의 by)
         st.divider()
-        st.markdown("**필터**")
+
         rows_all = build_rows(site, events, matched, sess)
+
+        # ── 세션 정보 · 내보내기 (필터보다 위) ──
+        st.markdown("**세션 정보**")
+        cnt = sess.counts()
+        st.caption(f"정탐 {cnt['tp']} · 오탐 {cnt['fp']} · 애매 {cnt['unsure']} · 내보냄 {cnt['exported']}")
+        pend = sess.unexported_ids()
+        n_pend = sum(len(v) for v in pend.values())
+        if st.button(f"📦 영상 내보내기 (오탐 {len(pend['fp'])} · 애매 {len(pend['unsure'])})",
+                     disabled=not n_pend, width="stretch", type="primary"):
+            export_clips(site, events, sess, root, pend)
+            if not st.session_state.get("export_err"):
+                st.rerun()
+        if st.session_state.get("export_err"):
+            st.error("영상을 저장하지 못했습니다. 저장 위치(NAS) 연결을 확인하고 다시 시도해 주세요.")
+            with st.expander("자세히"):
+                st.code(st.session_state.export_err)
+        st.divider()
+
+        st.markdown("**필터**")
         all_reasons = sorted({x for r in rows_all for x in r["reasons"]})
         all_bcts = sorted({r["bct"] for r in rows_all}, key=lambda b: int(b[3:]))
         f = {
@@ -521,20 +555,6 @@ def page_review(site, date: str):
             "missing": st.multiselect("클래스 미검출 (점수 0)", ["hook", "helmet", "harness"]),
             "status": st.radio("상태", ["전체", "미검수", "검수됨", "오탐만"], horizontal=True),
         }
-        st.divider()
-        c = sess.counts()
-        st.markdown("**세션**")
-        st.caption(f"정탐 {c['tp']} · 오탐 {c['fp']} · 애매 {c['unsure']} · 내보냄 {c['exported']}")
-        pend = sess.unexported_ids()
-        n_pend = sum(len(v) for v in pend.values())
-        if st.button(f"📦 영상 내보내기 (오탐 {len(pend['fp'])} · 애매 {len(pend['unsure'])})", disabled=not n_pend, width="stretch", type="primary"):
-            export_clips(site, events, sess, root, pend)
-            if not st.session_state.get("export_err"):
-                st.rerun()
-        if st.session_state.get("export_err"):
-            st.error("영상을 저장하지 못했습니다. 저장 위치(NAS) 연결을 확인하고 다시 시도해 주세요.")
-            with st.expander("자세히"):
-                st.code(st.session_state.export_err)
 
     flist = apply_filters(rows_all, f)
     n_done = sum(1 for r in flist if r["my"])
@@ -590,7 +610,8 @@ def page_review(site, date: str):
 
     mine = VERDICTS.get(r["my"], "")
     vcls = {"tp": "v-tp", "fp": "v-fp", "unsure": "v-un"}.get(r["my"], "muted")
-    with st.container(key="action_panel"):
+    # 판정한 이벤트는 패널 색으로 바로 보이게 (미검수 하늘색 · 정탐 연두 · 오탐 연빨강 · 애매 회색)
+    with st.container(key=f"action_panel_{r['my']}" if r["my"] else "action_panel"):
         has_row = r["hook"] is not None or r["helmet"] is not None or r["harness"] is not None
         verdict_txt = VERDICT_KO.get(r["verdict"], VERDICT_KO[""])
         marks = class_marks(r, site.thresholds) if has_row else ""
