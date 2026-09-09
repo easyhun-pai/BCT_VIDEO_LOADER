@@ -166,6 +166,11 @@ scripts\review_app.bat        # cmd 용 (Ctrl+C 시 "일괄 작업을 끝내시�
 - **판정 저장** 누를 때마다 `{저장루트}/{site}/{date}/session.json` 에 기록. 중간에 꺼도 이어서. SQLite 아님(SMB 동시쓰기 잠금 회피).
 - **오탐 내보내기** 사이드바 버튼. 오탐으로 찍은 이벤트의 학습용(박스 없음) mp4를 `{저장루트}/{site}/{date}/{event_id}/` 로 받고 `session.json` 의 `exported` 에 기록.
 - **저장 루트** `BCT_REVIEW_OUT` 환경변수 > NAS `\\192.168.33.22\DEV\2026_retrain_dataset` (안 붙어 있으면 `secrets.local.json` 의 `nas` 자격으로 `net use` 한 번 시도) > `data/review/`.
-- 검수자 이름은 사이드바에서. 세션 파일에 `by` 로 남는다.
+- **로그인** 첫 화면에서 ID/비밀번호. 계정은 `config/users.local.json`(gitignore)에 PBKDF2 해시로 저장.
+  ```powershell
+  scripts\review user add admin        # 비밀번호 프롬프트
+  scripts\review user list
+  ```
+  로그인 ID가 곧 검수자라 세션 파일의 `by` 에 남는다. 페이지를 새로고침하면 다시 로그인한다.
 
 헤드리스 테스트: `streamlit.testing.v1.AppTest` 로 현장→일자→검수→판정→되돌리기→내보내기 흐름을 실제 현장 데이터에 대해 돌려 확인했다(2026-09-09, 514건).

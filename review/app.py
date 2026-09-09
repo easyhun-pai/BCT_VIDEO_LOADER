@@ -26,6 +26,7 @@ from review.catalog import Event, list_days, list_events, minio_client  # noqa: 
 from review.download import fetch_events  # noqa: E402
 from review.influx import join_events, query_day, reasons_from  # noqa: E402
 from review.session import VERDICTS, Session  # noqa: E402
+from review.auth import list_users, users_path, verify_user  # noqa: E402
 
 APP_NAME = "오탐 검수 플랫폼"
 ORG = "Paimedialab"
@@ -274,6 +275,47 @@ def _keyboard_html():
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# 로그인
+# ══════════════════════════════════════════════════════════════════════════
+def page_login():
+    st_ = settings()
+    header("로그인")
+    _, mid, _ = st.columns([1, 1.2, 1])
+    with mid:
+        with st.container(border=True):
+            st.markdown("**검수자 로그인**")
+            if not list_users(st_):
+                st.error(f"계정이 없습니다. 먼저 만들어 주세요:\n\n`scripts\\review user add admin`\n\n(파일: `{users_path(st_)}`)")
+                return
+            uid = st.text_input("ID", key="login_id", autocomplete="username")
+            pw = st.text_input("비밀번호", type="password", key="login_pw", autocomplete="current-password")
+            if st.button("로그인", key="btn_login", type="primary", width="stretch"):
+                u = verify_user(st_, uid, pw)
+                if u:
+                    st.session_state.user = u
+                    st.session_state.pop("login_pw", None)
+                    st.rerun()
+                st.error("ID 또는 비밀번호가 맞지 않습니다.")
+        st.caption("계정은 `scripts\\review user add <id>` 로 추가·변경합니다.")
+
+
+def sidebar_user():
+    u = st.session_state.get("user")
+    if not u:
+        return
+    with st.sidebar:
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.markdown(f"👤 **{u['name']}**")
+        with c2:
+            if st.button("로그아웃", key="btn_logout", width="stretch"):
+                for k in ("user", "site_code", "date", "loaded", "events", "matched", "stats", "sess", "idx"):
+                    st.session_state.pop(k, None)
+                st.rerun()
+        st.divider()
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # 페이지 1 · 현장 선택
 # ══════════════════════════════════════════════════════════════════════════
 def page_sites():
@@ -372,7 +414,7 @@ def page_review(site, date: str):
             st.session_state.pop("date", None); st.session_state.pop("loaded", None); st.rerun()
         if st.button("🔄 새로고침 (MinIO·Influx 재조회)", width="stretch"):
             st.session_state.pop("loaded", None); st.rerun()
-        reviewer = st.text_input("검수자", value=sess.data.get("reviewer") or os.environ.get("USERNAME", ""))
+        reviewer = st.session_state.user["id"]           # 로그인 ID 가 곧 검수자 (session.json 의 by)
         st.divider()
         st.markdown("**필터**")
         rows_all = build_rows(site, events, matched, sess)
@@ -515,6 +557,9 @@ def export_fp(site, events: list[Event], sess: Session, root: Path, ids: list[st
 def main():
     inject_css()
     st_ = settings()
+    if not st.session_state.get("user"):
+        page_login(); return
+    sidebar_user()
     code = st.session_state.get("site_code")
     if not code:
         page_sites(); return

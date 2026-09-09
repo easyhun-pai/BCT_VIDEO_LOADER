@@ -6,6 +6,7 @@
   check-influx SITE DATE         Influx 필드·조인율·시각차 검증
   resolve SITE MEMO.txt          텔레그램 메모(HHMM BCT) → 이벤트 ID
   fetch SITE (--ids-file F | --ids a,b | DATE --bct.. --verdict..)  클립 다운로드
+  user add|list|del [ID]         웹 로그인 계정 (users.local.json, PBKDF2 해시)
 """
 from __future__ import annotations
 
@@ -263,6 +264,30 @@ def cmd_fetch(a, st):
     return 0
 
 
+def cmd_user(a, st):
+    from . import auth
+    if a.action == "list":
+        users = auth.list_users(st)
+        print(f"users 파일: {auth.users_path(st)}")
+        print(tabulate([[k, v.get("name", ""), v.get("updated_at", "")] for k, v in users.items()],
+                       headers=["id", "name", "updated"]) if users else "(계정 없음)")
+        return 0
+    if a.action == "add":
+        pw = a.password
+        if not pw:
+            import getpass
+            pw = getpass.getpass(f"[{a.id}] 비밀번호: ")
+            if pw != getpass.getpass("다시 입력: "):
+                print("비밀번호가 서로 다릅니다."); return 2
+        p = auth.set_password(st, a.id, pw, a.name)
+        print(f"계정 저장: {a.id} → {p}")
+        return 0
+    if a.action == "del":
+        ok = auth.delete_user(st, a.id)
+        print("삭제됨" if ok else "그런 계정 없음"); return 0 if ok else 1
+    return 2
+
+
 # ── argparse ─────────────────────────────────────────────────────────────
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m review", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -293,6 +318,11 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--roles", help="hook,ppe (기본: 현장 cameras)"); q.add_argument("--tg", action="store_true", help="검수용(박스) 영상도")
     q.add_argument("--out", help="저장 루트 (기본: NAS → 로컬 폴백)"); q.add_argument("--dry-run", action="store_true")
     q.set_defaults(fn=cmd_fetch)
+
+    q = sp.add_parser("user", help="웹 로그인 계정 관리 (add|list|del)")
+    q.add_argument("action", choices=["add", "list", "del"]); q.add_argument("id", nargs="?")
+    q.add_argument("--name", help="표시 이름"); q.add_argument("--password", help="비대화식 입력 (생략 시 프롬프트)")
+    q.set_defaults(fn=cmd_user)
     return p
 
 
