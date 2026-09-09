@@ -34,6 +34,21 @@ st.set_page_config(page_title=f"{ORG} {APP_NAME}", page_icon="🔎", layout="wid
 
 PLAYABLE = {"h264", "avc1", "vp9", "vp8", "av1", "hevc"}   # 브라우저가 재생하는 코덱 (hevc 는 환경에 따라)
 BTN = {"tp": "정탐 ←", "fp": "오탐 →", "unsure": "애매 ↓", "skip": "건너뛰기 ␣", "undo": "되돌리기 Z"}
+VERDICT_KO = {"allowed": "출입 승인 ✅", "denied": "출입 거부 ❌", "": "판정 정보 없음"}
+VERDICT_SHORT = {"allowed": "승인", "denied": "거부", "": "-"}
+CLASSES = (("안전모", "helmet"), ("하네스", "harness"), ("안전고리", "hook"))
+
+
+def class_marks(r: dict, thresholds: dict) -> str:
+    """점수·임계값 → '안전모 ⭕ · 하네스 ⭕ · 안전고리 ❌' (엣지 decision_engine 과 같은 기준)."""
+    out = []
+    for label, key in CLASSES:
+        v = r.get(key)
+        if v is None:
+            out.append(f"{label} –")
+        else:
+            out.append(f"{label} {'⭕' if v >= thresholds.get(f'{key}_score', 0.5) else '❌'}")
+    return " · ".join(out)
 
 CSS = """
 <style>
@@ -454,7 +469,7 @@ def page_review(site, date: str):
         all_bcts = sorted({r["bct"] for r in rows_all}, key=lambda b: int(b[3:]))
         f = {
             "time": st.slider("시간대", value=(_time(0, 0), _time(23, 59)), step=__import__("datetime").timedelta(minutes=5), format="HH:mm"),
-            "verdict": st.radio("판정", ["전체", "allowed", "denied"], horizontal=True),
+            "verdict": {"전체": "전체", "승인": "allowed", "거부": "denied"}[st.radio("판정", ["전체", "승인", "거부"], horizontal=True)],
             "reasons": st.multiselect("사유", all_reasons),
             "bcts": st.multiselect("BCT", all_bcts),
             "hook": st.slider("Hook 점수", 0.0, 1.0, (0.0, 1.0), 0.05),
@@ -501,7 +516,7 @@ def page_review(site, date: str):
         if st.button("◀ 이전", disabled=idx == 0, width="stretch"):
             st.session_state.idx = idx - 1; st.rerun()
     with nav[1]:
-        opts = [f"{x['time']}  {x['bct']:6s}  {x['verdict'] or '-':8s}  {VERDICTS.get(x['my'], '·')}  {x['id']}" for x in flist]
+        opts = [f"{x['time']}  {x['bct']:6s}  {VERDICT_SHORT.get(x['verdict'], '-'):4s}  {VERDICTS.get(x['my'], '·')}  {x['id']}" for x in flist]
         pick = st.selectbox("이벤트로 이동", range(len(flist)), index=idx, format_func=lambda i: opts[i], label_visibility="collapsed")
         if pick != idx:
             st.session_state.idx = pick; st.rerun()
@@ -511,12 +526,14 @@ def page_review(site, date: str):
 
     mine = VERDICTS.get(r["my"], "")
     vcls = {"tp": "v-tp", "fp": "v-fp", "unsure": "v-un"}.get(r["my"], "muted")
-    sc = " · ".join(f"{k} {v:.2f}" for k, v in (("Hook", r["hook"]), ("Helmet", r["helmet"]), ("Harness", r["harness"])) if v is not None)
+    has_row = r["hook"] is not None or r["helmet"] is not None or r["harness"] is not None
+    verdict_txt = VERDICT_KO.get(r["verdict"], VERDICT_KO[""])
+    marks = class_marks(r, site.thresholds) if has_row else ""
     st.markdown(
         f'<div class="pm-ev"><code>{ev.id}</code> &nbsp; <span class="muted">{idx + 1} / {len(flist)}</span> &nbsp; '
         f'<span class="{vcls}">{mine or "미검수"}</span><br>'
-        f'{ev.time_str} · <b>{ev.bct}</b> <span class="muted">({site.bcts.get(ev.bct, "")})</span> · 판정 <b>{r["verdict"] or "-"}</b> · '
-        f'{sc or "점수 없음"} · 사유 <b>{", ".join(r["reasons"]) or "-"}</b></div>',
+        f'{ev.time_str} · <b>{ev.bct.upper()}</b> &nbsp;·&nbsp; <b>{verdict_txt}</b>'
+        + (f' &nbsp;·&nbsp; {marks}' if marks else "") + '</div>',
         unsafe_allow_html=True,
     )
 
@@ -530,7 +547,7 @@ def page_review(site, date: str):
                     path, label = None, f"불러오기 실패: {e}"
             st.caption(f"**{role}** · {label}")
             if path:
-                st.video(str(path))
+                st.video(str(path), autoplay=True, loop=True, muted=True)   # 자동·반복 재생, 컨트롤은 그대로
             else:
                 st.warning("영상 없음")
 
@@ -567,9 +584,10 @@ def page_review(site, date: str):
     # ── 목록 ──
     with st.expander(f"하루치 목록 (필터 {len(flist)}건)", expanded=False):
         st.dataframe(
-            [{"#": i + 1, "time": x["time"], "bct": x["bct"], "verdict": x["verdict"], "hook": x["hook"], "helmet": x["helmet"],
-              "harness": x["harness"], "reasons": ", ".join(x["reasons"]), "내 판정": VERDICTS.get(x["my"], ""), "memo": x["memo"],
-              "tg": "○" if x["tg"] else "", "id": x["id"]} for i, x in enumerate(flist)],
+            [{"#": i + 1, "시각": x["time"], "BCT": x["bct"].upper(), "판정": VERDICT_SHORT.get(x["verdict"], "-"),
+              **{lab: ("⭕" if x[key] is not None and x[key] >= site.thresholds.get(f"{key}_score", 0.5) else "❌" if x[key] is not None else "–")
+                 for lab, key in CLASSES},
+              "내 판정": VERDICTS.get(x["my"], ""), "메모": x["memo"], "id": x["id"]} for i, x in enumerate(flist)],
             width="stretch", hide_index=True, height=360)
 
 
