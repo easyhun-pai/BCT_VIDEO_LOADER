@@ -7,6 +7,7 @@
   resolve SITE MEMO.txt          텔레그램 메모(HHMM BCT) → 이벤트 ID
   fetch SITE (--ids-file F | --ids a,b | DATE --bct.. --verdict..)  클립 다운로드
   user add|list|del [ID]         웹 로그인 계정 (users.local.json, PBKDF2 해시)
+  report SITE FROM TO [--gap 300] 기간 출입 통계 리포트 (시도 세션 · BCT/일별/시간대 · 사유 · PDF)
 """
 from __future__ import annotations
 
@@ -288,6 +289,47 @@ def cmd_user(a, st):
     return 2
 
 
+def cmd_report(a, st):
+    """기간 출입 통계 리포트: 이벤트 → 시도 세션 → BCT/일별/시간대별 집계 → CSV·차트·HTML·PDF."""
+    from datetime import datetime
+    from .report import build_sessions, pull_events, summarize, write_outputs
+    from .report_render import html_to_pdf, make_charts, make_html
+
+    site = st.site(a.site)
+    out = Path(a.out) if a.out else (cfgmod.ROOT / "data" / "_reports" / f"{site.code}_{a.day_from.replace('-', '')}_{a.day_to.replace('-', '')}")
+    out.mkdir(parents=True, exist_ok=True)
+    print(f"[report] {site.name} {a.day_from} ~ {a.day_to} · gap {a.gap}s → {out}", file=sys.stderr)
+    with SiteAccess(site) as acc:
+        rows, quality = pull_events(site, st.timezone, a.day_from, a.day_to, acc, log=lambda m: print(m, file=sys.stderr))
+    if not rows:
+        print("이벤트 없음"); return 1
+    sessions = build_sessions(rows, a.gap)
+    summary = summarize(rows, sessions, a.gap)
+    write_outputs(out, rows, sessions, summary, quality)
+
+    # 간격 히스토그램 (부록 검증용)
+    from collections import Counter, defaultdict
+    by_bct = defaultdict(list)
+    for r in sorted(rows, key=lambda r: (r["bct"], r["dt"])):
+        by_bct[r["bct"]].append(r)
+    edges = [(0, 15), (15, 30), (30, 45), (45, 60), (60, 90), (90, 120), (120, 180), (180, 300), (300, 600), (600, None)]
+    gh = {"edges": [list(e) for e in edges], "after_denied": [0] * len(edges), "after_allowed": [0] * len(edges)}
+    for lst in by_bct.values():
+        for x, y in zip(lst, lst[1:]):
+            g = (y["dt"] - x["dt"]).total_seconds()
+            for i, (lo, hi) in enumerate(edges):
+                if lo <= g and (hi is None or g < hi):
+                    key = "after_denied" if x["verdict"] == "denied" else "after_allowed"
+                    gh[key][i] += 1; break
+    charts = make_charts(summary, gh, out)
+    html = make_html(site.name, a.day_from, a.day_to, summary, quality, charts, out)
+    pdf_ok = html_to_pdf(html, out / "report.pdf")
+    o = summary["overview"]
+    print(f"이벤트 {o['events']} · 세션 {o['sessions']} · 승인 {o['allowed']} · 거부 {o['denied']} · 성공률 {o['success_rate']}%")
+    print(f"→ {html}" + (f"\n→ {out / 'report.pdf'}" if pdf_ok else "\n(PDF: Chrome/Edge 를 찾지 못해 생략)"))
+    return 0
+
+
 # ── argparse ─────────────────────────────────────────────────────────────
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m review", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -318,6 +360,12 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--roles", help="hook,ppe (기본: 현장 cameras)"); q.add_argument("--tg", action="store_true", help="검수용(박스) 영상도")
     q.add_argument("--out", help="저장 루트 (기본: NAS → 로컬 폴백)"); q.add_argument("--dry-run", action="store_true")
     q.set_defaults(fn=cmd_fetch)
+
+    q = sp.add_parser("report", help="기간 출입 통계 리포트 (세션·BCT·일별·사유, CSV/HTML/PDF)")
+    q.add_argument("site"); q.add_argument("day_from", help="YYYY-MM-DD"); q.add_argument("day_to", help="YYYY-MM-DD")
+    q.add_argument("--gap", type=int, default=300, help="재시도로 묶는 최대 간격(초). 기본 300 (거부 뒤 5분 안에 다시 오면 같은 시도)")
+    q.add_argument("--out", help="출력 폴더 (기본 data/_reports/{site}_{from}_{to})")
+    q.set_defaults(fn=cmd_report)
 
     q = sp.add_parser("user", help="웹 로그인 계정 관리 (add|list|del)")
     q.add_argument("action", choices=["add", "list", "del"]); q.add_argument("id", nargs="?")

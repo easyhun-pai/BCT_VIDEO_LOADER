@@ -149,6 +149,22 @@ scripts\review fetch HANIL 2026-09-07 --verdict denied --bct 7 --dry-run
 - **메모 형식** 그대로: `* 26/08/26` 줄 아래 `0946 7` (HHMM BCT). 매칭 실패·중복은 ±10분 후보와 함께 보고한다.
 - 현장 추가 = `sites.json` 항목 하나 + `secrets.local.json` 항목 하나. 현장 방문·현장 변경 없음.
 
+## 기간 출입 통계 리포트 (`review report`)
+
+```powershell
+scripts\review report HANIL 2026-09-07 2026-09-13            # → data/_reports/HANIL_20260907_20260913/
+scripts\review report HANIL 2026-09-07 2026-09-13 --gap 120  # 재시도 간격 기준 변경 (기본 300초)
+```
+
+이벤트를 **시도 세션**으로 묶어 BCT별·일별·시간대별 승인/거부, 첫 시도 성공률, 재시도 회복률, 거부 사유,
+반복 세션, 이상 징후(0건 BCT-일, 조인 누락)를 낸다. 출력: `report.pdf`, `report.html`, 차트 PNG,
+`events_raw.csv`, `sessions.csv`(이벤트 ID 포함), `per_bct.csv`, `daily.csv`, `hourly.csv`, `summary.json`.
+
+세션 규칙: 같은 BCT에서 **직전 이벤트가 거부**이고 **5분(300초) 안**에 다음 이벤트가 오면 같은 세션(재시도).
+승인이 나오면 세션 종료. 결과는 승인이 하나라도 있으면 승인, 없으면 거부(반복해도 1회).
+300초는 데이터로 정했다 — 거부 뒤 다음 이벤트 밀도가 승인 뒤(다른 사람) 기준선보다 120초까지 20배 이상,
+300초까지 우세, 그 뒤로는 구분되지 않는다. 거부 사유는 Influx에 없어 현장 임계값으로 유도. PDF는 Chrome/Edge가 있을 때만 생성.
+
 ## 오탐 검수 세션 웹 (`review/app.py`, P1)
 
 검수자 PC에서 실행하는 로컬 웹(Streamlit). 브라우저는 `localhost:8501`, 상시 서버 없음.
