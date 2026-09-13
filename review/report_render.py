@@ -42,14 +42,16 @@ def _stacked_with_rate(plt, labels, allowed, denied, rates, title, path, xlabel=
     ax.bar(x, denied, width, bottom=allowed, color=DENY, label="거부", zorder=3)
     ax.set_xticks(list(x)); ax.set_xticklabels(labels, rotation=rotate, ha="right" if rotate else "center")
     ax.set_ylabel("시도 세션 수"); ax.set_title(title, loc="left"); ax.grid(axis="y", color=GRID, zorder=0)
+    ymax = max((a + d) for a, d in zip(allowed, denied)) or 1
+    ax.set_ylim(0, ymax * 1.32)                       # 위쪽 여백: 범례와 성공률 라벨이 막대와 겹치지 않게
     if xlabel: ax.set_xlabel(xlabel)
     ax2 = ax.twinx(); ax2.spines["right"].set_visible(True); ax2.spines["right"].set_color(GRID)
     ax2.plot(list(x), rates, color=ACCENT, marker="o", lw=1.6, ms=4, zorder=4, label="성공률")
     for xi, r in zip(x, rates):
         if r is not None: ax2.annotate(f"{r:.0f}%", (xi, r), textcoords="offset points", xytext=(0, 6), ha="center", fontsize=8, color=ACCENT)
-    ax2.set_ylim(0, 105); ax2.set_ylabel("성공률 (%)", color=ACCENT); ax2.tick_params(axis="y", colors=ACCENT)
+    ax2.set_ylim(0, 132); ax2.set_yticks([0, 20, 40, 60, 80, 100]); ax2.set_ylabel("성공률 (%)", color=ACCENT); ax2.tick_params(axis="y", colors=ACCENT)
     h1, l1 = ax.get_legend_handles_labels(); h2, l2 = ax2.get_legend_handles_labels()
-    ax.legend(h1 + h2, l1 + l2, loc="upper left", frameon=False, ncol=3, fontsize=9)
+    ax.legend(h1 + h2, l1 + l2, loc="upper center", frameon=False, ncol=3, fontsize=9, bbox_to_anchor=(0.5, 1.0))
     fig.tight_layout(); fig.savefig(path); plt.close(fig)
 
 
@@ -70,7 +72,8 @@ def make_charts(summary: dict, gap_hist: dict | None, out: Path) -> dict[str, Pa
     ax.bar(x, [h["allowed"] for h in hr], 0.8, color=ALLOW, label="승인", zorder=3)
     ax.bar(x, [h["denied"] for h in hr], 0.8, bottom=[h["allowed"] for h in hr], color=DENY, label="거부", zorder=3)
     ax.set_xticks(x); ax.set_xticklabels([f"{h:02d}" for h in x]); ax.set_xlabel("시각 (시)"); ax.set_ylabel("시도 세션 수")
-    ax.set_title("시간대별 시도 세션 (기간 합산)", loc="left"); ax.grid(axis="y", color=GRID, zorder=0); ax.legend(frameon=False, fontsize=9)
+    ax.set_ylim(0, max(h["sessions"] for h in hr) * 1.2)
+    ax.set_title("시간대별 시도 세션 (기간 합산)", loc="left"); ax.grid(axis="y", color=GRID, zorder=0); ax.legend(frameon=False, fontsize=9, loc="upper right")
     fig.tight_layout(); fig.savefig(p); plt.close(fig); charts["hourly"] = p
 
     ad = summary["attempts_dist"]; p = out / "chart_attempts.png"
@@ -80,7 +83,8 @@ def make_charts(summary: dict, gap_hist: dict | None, out: Path) -> dict[str, Pa
     for xi, a in zip(x, ad):
         ax.annotate(str(a["allowed"] + a["denied"]), (xi, a["allowed"] + a["denied"]), textcoords="offset points", xytext=(0, 3), ha="center", fontsize=8, color=MUTED)
     ax.set_xticks(list(x)); ax.set_xticklabels([a["attempts"] + "회" for a in ad]); ax.set_ylabel("세션 수")
-    ax.set_title("세션당 시도 횟수", loc="left"); ax.grid(axis="y", color=GRID, zorder=0); ax.legend(frameon=False, fontsize=9)
+    ax.set_ylim(0, max(a["allowed"] + a["denied"] for a in ad) * 1.22)
+    ax.set_title("세션당 시도 횟수", loc="left"); ax.grid(axis="y", color=GRID, zorder=0); ax.legend(frameon=False, fontsize=9, loc="upper right")
     fig.tight_layout(); fig.savefig(p); plt.close(fig); charts["attempts"] = p
 
     rs = summary["reason_single"]; p = out / "chart_reasons.png"
