@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-VERDICTS = {"tp": "정탐", "fp": "오탐", "unsure": "애매"}
+VERDICTS = {"tp": "정탐", "fp": "오탐"}          # 2026-09-14 '애매' 제거 — 정탐/오탐 이분법
+LEGACY_VERDICTS = {"unsure": "애매"}           # 예전 세션 파일에 남아 있을 수 있는 값 (읽기만)
 
 
 def _now() -> str:
@@ -67,13 +68,29 @@ class Session:
             self.save()
 
     def set(self, event_id: str, verdict: str, reviewer: str, memo: str = "", ip: str = "") -> None:
-        if verdict not in VERDICTS:
-            raise ValueError(verdict)
-        self.data["verdicts"][event_id] = {"verdict": verdict, "at": _now(), "by": reviewer, "ip": ip, "memo": memo}
+        self.set_many({event_id: verdict}, reviewer, ip=ip, memos={event_id: memo})
+
+    def set_many(self, verdicts: dict[str, str], reviewer: str, ip: str = "", memos: dict[str, str] | None = None) -> None:
+        """여러 이벤트를 한 번에 판정 (그리드 모드). history 에는 묶음 하나로 들어가 되돌리기가 묶음 단위."""
+        for v in verdicts.values():
+            if v not in VERDICTS:
+                raise ValueError(v)
+        if not verdicts:
+            return
+        memos = memos or {}
+        now = _now()
+        for eid, v in verdicts.items():
+            self.data["verdicts"][eid] = {"verdict": v, "at": now, "by": reviewer, "ip": ip, "memo": memos.get(eid, "")}
         hist = self.data["history"]
-        if event_id in hist:
-            hist.remove(event_id)
-        hist.append(event_id)
+        ids = list(verdicts)
+        # 같은 이벤트가 이미 history 에 있으면(재판정) 옛 항목에서 제거
+        for i, h in enumerate(hist):
+            if isinstance(h, list):
+                hist[i] = [x for x in h if x not in verdicts]
+            elif h in verdicts:
+                hist[i] = None
+        self.data["history"] = [h for h in hist if h and (not isinstance(h, list) or h)]
+        self.data["history"].append(ids if len(ids) > 1 else ids[0])
         if reviewer:
             self.data["reviewer"] = reviewer
         self.save()
@@ -84,22 +101,33 @@ class Session:
             v["memo"] = memo
             self.save()
 
-    def undo(self) -> str | None:
-        """마지막 판정을 지우고 그 event_id 를 돌려준다."""
+    def undo(self) -> list[str]:
+        """마지막 판정(또는 묶음)을 지우고 지운 event_id 목록을 돌려준다."""
+        hist = self.data["history"]
+        if not hist:
+            return []
+        last = hist.pop()
+        ids = last if isinstance(last, list) else [last]
+        for eid in ids:
+            self.data["verdicts"].pop(eid, None)
+        self.save()
+        return ids
+
+    def last_judged_id(self) -> str | None:
+        """이어하기용: 마지막으로 판정한 이벤트 ID (묶음이면 그 마지막)."""
         hist = self.data["history"]
         if not hist:
             return None
-        eid = hist.pop()
-        self.data["verdicts"].pop(eid, None)
-        self.save()
-        return eid
+        last = hist[-1]
+        return last[-1] if isinstance(last, list) else last
 
     # ── 내보내기 ──
     def mark_exported(self, event_id: str, files: list[str]) -> None:
         self.data["exported"][event_id] = {"at": _now(), "files": files}
         self.save()
 
-    EXPORT_VERDICTS = ("fp", "unsure")     # 영상을 내보내는 판정. 정탐은 기록만.
+    # 영상을 내보내는 판정. 정탐은 기록만. 'unsure' 는 예전 세션 파일 호환용(있으면 같이 내보냄).
+    EXPORT_VERDICTS = ("fp", "unsure")
 
     def ids_by_verdict(self, verdict: str) -> list[str]:
         return [k for k, v in self.data["verdicts"].items() if v.get("verdict") == verdict]
@@ -108,7 +136,7 @@ class Session:
         return self.ids_by_verdict("fp")
 
     def unexported_ids(self) -> dict[str, list[str]]:
-        """{verdict: [event_id...]} — 오탐·애매 중 아직 영상을 안 받은 것."""
+        """{verdict: [event_id...]} — 오탐(및 예전 애매) 중 아직 영상을 안 받은 것."""
         return {v: [k for k in self.ids_by_verdict(v) if k not in self.data["exported"]] for v in self.EXPORT_VERDICTS}
 
     def unexported_fp_ids(self) -> list[str]:
@@ -117,6 +145,7 @@ class Session:
     # ── 집계 ──
     def counts(self) -> dict[str, int]:
         c = {k: 0 for k in VERDICTS}
+        c["unsure"] = 0
         for v in self.data["verdicts"].values():
             c[v.get("verdict", "")] = c.get(v.get("verdict", ""), 0) + 1
         c["total"] = len(self.data["verdicts"])

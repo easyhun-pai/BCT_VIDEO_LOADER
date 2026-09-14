@@ -1,7 +1,7 @@
 """BCT 오탐 검수 세션 — 검수자 PC 로컬 웹 (Streamlit).
 
 실행:  scripts\\review_app.bat   (또는  python -m streamlit run review/app.py)
-흐름:  현장 선택 → 일자 선택 → 하루치 목록·필터 → 검수(정탐/오탐/애매) → 오탐 내보내기
+흐름:  현장 선택 → 일자 선택 → 하루치 목록·필터 → 검수(정탐/오탐, 1개씩 또는 2×2 그리드) → 오탐 내보내기
 저장:  {저장루트}/{site}/{date}/session.json  (판정), {event_id}/{hook,ppe}.mp4 (오탐 학습용 클립)
 """
 from __future__ import annotations
@@ -33,7 +33,8 @@ ORG = "Paimedialab"
 st.set_page_config(page_title=f"{ORG} {APP_NAME}", page_icon="🔎", layout="wide")
 
 PLAYABLE = {"h264", "avc1", "vp9", "vp8", "av1", "hevc"}   # 브라우저가 재생하는 코덱 (hevc 는 환경에 따라)
-BTN = {"tp": "정탐 ←", "fp": "오탐 →", "unsure": "애매 ↓", "skip": "건너뛰기 ␣", "undo": "되돌리기 Z"}
+BTN = {"tp": "정탐 ←", "fp": "오탐 →", "skip": "건너뛰기 ␣", "undo": "되돌리기 Z"}
+GRID_N = 4                                   # 그리드 모드: 한 화면에 이벤트 4개 (2×2), 카메라 2대면 영상 8개
 VERDICT_KO = {"allowed": "출입 승인 ✅", "denied": "출입 거부 ❌", "": "판정 정보 없음"}
 VERDICT_SHORT = {"allowed": "승인", "denied": "거부", "": "-"}
 CLASSES = (("안전모", "helmet"), ("하네스", "harness"), ("안전고리", "hook"))
@@ -83,15 +84,30 @@ header[data-testid="stHeader"] { background:transparent; height:0; }
 .st-key-action_panel_fp { background:#FEF2F2; border-color:#FECACA; }
 .st-key-action_panel_fp .pm-ev { border-color:#FECACA; }
 .st-key-action_panel_fp [data-testid="stCaptionContainer"] { color:#991B1B; }
-.st-key-action_panel_unsure { background:#F8FAFC; border-color:#E2E8F0; }
-.st-key-action_panel_unsure .pm-ev { border-color:#E2E8F0; }
-.st-key-action_panel_unsure [data-testid="stCaptionContainer"] { color:#475569; }
+/* 그리드 타일 (2×2). 체크(오탐 후보)=연빨강, 이미 판정된 것은 판정색 */
+.st-key-tile_0, .st-key-tile_1, .st-key-tile_2, .st-key-tile_3,
+.st-key-tile_fp_0, .st-key-tile_fp_1, .st-key-tile_fp_2, .st-key-tile_fp_3,
+.st-key-tile_done_tp_0, .st-key-tile_done_tp_1, .st-key-tile_done_tp_2, .st-key-tile_done_tp_3,
+.st-key-tile_done_fp_0, .st-key-tile_done_fp_1, .st-key-tile_done_fp_2, .st-key-tile_done_fp_3
+  { border:1px solid #BFDBFE; background:#EFF6FF; border-radius:10px; padding:10px 12px 8px; margin:0 0 10px; }
+.st-key-tile_fp_0, .st-key-tile_fp_1, .st-key-tile_fp_2, .st-key-tile_fp_3 { background:#FEF2F2; border-color:#FCA5A5; box-shadow:0 0 0 2px #FECACA inset; }
+.st-key-tile_done_tp_0, .st-key-tile_done_tp_1, .st-key-tile_done_tp_2, .st-key-tile_done_tp_3 { background:#F0FDF4; border-color:#BBF7D0; }
+.st-key-tile_done_fp_0, .st-key-tile_done_fp_1, .st-key-tile_done_fp_2, .st-key-tile_done_fp_3 { background:#FEF2F2; border-color:#FECACA; }
+.pm-tile-head { display:flex; align-items:center; gap:10px; font-size:13px; margin:0 0 4px; }
+.pm-tile-head .num { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:6px; background:#2563EB; color:#fff; font-weight:700; font-size:13px; }
+.pm-tile-head code { font-family:ui-monospace,Consolas,monospace; font-size:12px; background:#fff; padding:1px 6px; border-radius:3px; color:#1E3A8A; border:1px solid #E3E8EF; }
+.pm-tile-head .v-tp { color:#16A34A; font-weight:700; } .pm-tile-head .v-fp { color:#DC2626; font-weight:700; } .pm-tile-head .muted { color:#6B7280; }
+.pm-tile-sub { font-size:12.5px; color:#374151; margin:0 0 6px; }
+/* 그리드 판정 버튼 */
+.st-key-btn_grid_tp button { border-color:#16A34A; color:#16A34A; font-weight:700; }
+.st-key-btn_grid_tp button:hover { background:#DCFCE7; }
+.st-key-btn_grid_fp button { background:#DC2626; border-color:#DC2626; color:#fff; font-weight:700; }
+.st-key-btn_grid_fp button:hover { background:#B91C1C; border-color:#B91C1C; }
 /* 판정 버튼 */
 .st-key-btn_tp button { border-color:#16A34A; color:#16A34A; font-weight:600; }
 .st-key-btn_tp button:hover { background:#DCFCE7; }
 .st-key-btn_fp button { background:#DC2626; border-color:#DC2626; color:#FFFFFF; font-weight:600; }
 .st-key-btn_fp button:hover { background:#B91C1C; border-color:#B91C1C; }
-.st-key-btn_unsure button { border-color:#9CA3AF; color:#4B5563; font-weight:600; }
 .st-key-btn_skip button, .st-key-btn_undo button { color:#4B5563; }
 /* 카드·테두리 */
 div[data-testid="stVerticalBlockBorderWrapper"] { border-color:#E3E8EF !important; background:#FFFFFF; }
@@ -275,11 +291,13 @@ def apply_filters(rows: list[dict], f: dict) -> list[dict]:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 키보드 (← 정탐, → 오탐, ↓ 애매, Space 건너뛰기, Z 되돌리기)
+# 키보드
+#   1개씩: ← 정탐, → 오탐, Space 건너뛰기, Z 되돌리기
+#   그리드: P 전부 정탐, N 체크된 것 오탐(나머지 정탐), 1~4 체크 토글, Z 되돌리기
 # ══════════════════════════════════════════════════════════════════════════
-def keyboard():
+def keyboard(grid: bool = False):
     try:
-        _keyboard_html()
+        _keyboard_html(grid)
     except Exception:       # 헤드리스 테스트(AppTest) 등 컴포넌트 미지원 환경
         pass
 
@@ -319,21 +337,35 @@ def playback_rate(rate: float):
         pass
 
 
-def _keyboard_html():
-    components.html("""
+def _keyboard_html(grid: bool):
+    # 키 → 버튼 라벨 접두어. 리스너는 부모 문서에 한 번만 심고, 모드가 바뀌면 맵만 교체한다.
+    single = {"ArrowLeft": "정탐", "ArrowRight": "오탐", " ": "건너뛰기", "z": "되돌리기", "Z": "되돌리기"}
+    gridmap = {"p": "전부 정탐", "P": "전부 정탐", "n": "체크 오탐", "N": "체크 오탐", "z": "되돌리기", "Z": "되돌리기",
+               "1": "☐ 1", "2": "☐ 2", "3": "☐ 3", "4": "☐ 4"}
+    m = __import__("json").dumps(gridmap if grid else single, ensure_ascii=False)
+    components.html(f"""
 <script>
-(function(){
-  const doc = window.parent.document;
-  if (doc.__bctKeys) return; doc.__bctKeys = true;
-  const map = {ArrowLeft:'정탐', ArrowRight:'오탐', ArrowDown:'애매', ' ':'건너뛰기', z:'되돌리기', Z:'되돌리기'};
-  doc.addEventListener('keydown', (e) => {
+(function(){{
+  const w = window.parent, doc = w.document;
+  w.__bctKeyMap = {m};
+  if (w.__bctKeysInstalled) return; w.__bctKeysInstalled = true;
+  doc.addEventListener('keydown', (e) => {{
     const tag = (e.target && e.target.tagName) || '';
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target.isContentEditable) return;
-    const label = map[e.key]; if (!label) return;
-    const btn = [...doc.querySelectorAll('button')].find(b => (b.innerText || '').trim().startsWith(label));
-    if (btn) { e.preventDefault(); btn.click(); }
-  }, true);
-})();
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const label = (w.__bctKeyMap || {{}})[e.key]; if (!label) return;
+    // 체크박스(☐/☑ n)는 라벨의 숫자만 맞추고, 버튼은 접두어로 찾는다
+    let el = null;
+    if (label.startsWith('☐ ')) {{
+      const n = label.slice(2);
+      el = [...doc.querySelectorAll('label')].find(l => /^[☐☑]\\s*(\\d)/.test((l.innerText||'').trim()) && (l.innerText||'').trim().match(/^[☐☑]\\s*(\\d)/)[1] === n);
+      if (el) {{ const inp = el.querySelector('input[type=checkbox]'); if (inp) el = inp; }}
+    }} else {{
+      el = [...doc.querySelectorAll('button')].find(b => (b.innerText || '').trim().startsWith(label));
+    }}
+    if (el) {{ e.preventDefault(); el.click(); }}
+  }}, true);
+}})();
 </script>""", height=0)
 
 
@@ -521,6 +553,8 @@ def page_review(site, date: str):
             st.session_state.pop("loaded", None); st.rerun()
         rate = st.select_slider("재생 속도", options=[1.0, 1.5, 2.0, 3.0], value=st.session_state.get("rate", 2.0),
                                 format_func=lambda x: f"{x:g}x", key="rate")
+        mode = st.radio("보기", ["4개씩 (2×2)", "1개씩"], horizontal=True, key="view_mode")
+        grid = mode.startswith("4")
         reviewer = st.session_state.user["id"]           # 로그인 ID 가 곧 검수자 (session.json 의 by)
         st.divider()
 
@@ -529,11 +563,10 @@ def page_review(site, date: str):
         # ── 세션 정보 · 내보내기 (필터보다 위) ──
         st.markdown("**세션 정보**")
         cnt = sess.counts()
-        st.caption(f"정탐 {cnt['tp']} · 오탐 {cnt['fp']} · 애매 {cnt['unsure']} · 내보냄 {cnt['exported']}")
+        st.caption(f"정탐 {cnt['tp']} · 오탐 {cnt['fp']} · 내보냄 {cnt['exported']}")
         pend = sess.unexported_ids()
         n_pend = sum(len(v) for v in pend.values())
-        if st.button(f"📦 영상 내보내기 (오탐 {len(pend['fp'])} · 애매 {len(pend['unsure'])})",
-                     disabled=not n_pend, width="stretch", type="primary"):
+        if st.button(f"📦 영상 내보내기 (오탐 {n_pend})", disabled=not n_pend, width="stretch", type="primary"):
             export_clips(site, events, sess, root, pend)
             if not st.session_state.get("export_err"):
                 st.rerun()
@@ -565,7 +598,7 @@ def page_review(site, date: str):
     c = sess.counts()
     inf_val = f"{stats.get('matched', 0)}/{stats.get('events', len(events))}" if stats else "미조인"
     items = [("전체", f"{len(events)}", ""), ("필터", f"{len(flist)}", ""), ("검수", f"{n_done}/{len(flist)}", ""),
-             ("정탐", f"{c['tp']}", "ok"), ("오탐", f"{c['fp']}", "fp"), ("애매", f"{c['unsure']}", ""),
+             ("정탐", f"{c['tp']}", "ok"), ("오탐", f"{c['fp']}", "fp"),
              ("판정 연동", inf_val, "warn" if st.session_state.get("influx_err") else ""), ("저장", "NAS" if src == "NAS" else "이 PC", "" if src == "NAS" else "warn")]
     pills(items)
     if st.session_state.get("influx_err"):
@@ -580,18 +613,54 @@ def page_review(site, date: str):
     if st.session_state.get("idx_init") != (site.code, date):
         st.session_state.idx_init = (site.code, date)
         start = 0
-        hist = sess.data.get("history") or []
-        if hist:
-            pos = next((i for i, x in enumerate(flist) if x["id"] == hist[-1]), None)
+        last = sess.last_judged_id()
+        if last:
+            pos = next((i for i, x in enumerate(flist) if x["id"] == last), None)
             if pos is not None:
                 start = min(pos + 1, len(flist) - 1)
             else:                                   # 마지막 판정이 필터 밖이면 첫 미검수로
                 start = next((i for i, x in enumerate(flist) if not x["my"]), 0)
         st.session_state.idx = start
 
-    # ── 현재 이벤트 ──
     idx = max(0, min(st.session_state.get("idx", 0), len(flist) - 1))
     st.session_state.idx = idx
+
+    if grid:
+        review_grid(site, flist, idx, sess, reviewer, rate)
+    else:
+        review_single(site, flist, idx, sess, reviewer, rate)
+
+    # ── 목록 ──
+    with st.expander(f"하루치 목록 (필터 {len(flist)}건)", expanded=False):
+        st.dataframe(
+            [{"#": i + 1, "시각": x["time"], "BCT": x["bct"].upper(), "판정": VERDICT_SHORT.get(x["verdict"], "-"),
+              **{lab: ("⭕" if x[key] is not None and x[key] >= site.thresholds.get(f"{key}_score", 0.5) else "❌" if x[key] is not None else "–")
+                 for lab, key in CLASSES},
+              "내 판정": VERDICTS.get(x["my"], ""), "메모": x["memo"], "id": x["id"]} for i, x in enumerate(flist)],
+            width="stretch", hide_index=True, height=360)
+
+
+def _event_line(site, r: dict) -> tuple[str, str]:
+    """(판정 문구, 클래스 ⭕/❌ 문구)"""
+    has_row = r["hook"] is not None or r["helmet"] is not None or r["harness"] is not None
+    return VERDICT_KO.get(r["verdict"], VERDICT_KO[""]), (class_marks(r, site.thresholds) if has_row else "")
+
+
+def _video(site, ev: Event, role: str, key: str, label_role: bool = True):
+    try:
+        path, label = playable_path(site, ev, role)
+    except Exception:
+        path, label = None, "영상을 불러오지 못했습니다"
+    if label_role:
+        st.caption(f"**{role}** · {label}")
+    if path:
+        st.video(str(path), autoplay=True, loop=True, muted=True)
+    else:
+        st.warning("영상 없음")
+
+
+# ── 1개씩 모드 ────────────────────────────────────────────────────────────
+def review_single(site, flist: list[dict], idx: int, sess: Session, reviewer: str, rate: float):
     r = flist[idx]
     ev: Event = r["ev"]
 
@@ -609,12 +678,10 @@ def page_review(site, date: str):
             st.session_state.idx = idx + 1; st.rerun()
 
     mine = VERDICTS.get(r["my"], "")
-    vcls = {"tp": "v-tp", "fp": "v-fp", "unsure": "v-un"}.get(r["my"], "muted")
-    # 판정한 이벤트는 패널 색으로 바로 보이게 (미검수 하늘색 · 정탐 연두 · 오탐 연빨강 · 애매 회색)
-    with st.container(key=f"action_panel_{r['my']}" if r["my"] else "action_panel"):
-        has_row = r["hook"] is not None or r["helmet"] is not None or r["harness"] is not None
-        verdict_txt = VERDICT_KO.get(r["verdict"], VERDICT_KO[""])
-        marks = class_marks(r, site.thresholds) if has_row else ""
+    vcls = {"tp": "v-tp", "fp": "v-fp"}.get(r["my"], "muted")
+    # 판정한 이벤트는 패널 색으로 바로 보이게 (미검수 하늘색 · 정탐 연두 · 오탐 연빨강)
+    with st.container(key=f"action_panel_{r['my']}" if r["my"] in ("tp", "fp") else "action_panel"):
+        verdict_txt, marks = _event_line(site, r)
         st.markdown(
             f'<div class="pm-ev"><code>{ev.id}</code> &nbsp; <span class="muted">{idx + 1} / {len(flist)}</span> &nbsp; '
             f'<span class="{vcls}">{mine or "미검수"}</span><br>'
@@ -627,20 +694,12 @@ def page_review(site, date: str):
         for col, role in zip(vcols, site.cameras):
             with col:
                 with st.spinner(f"{role} 영상 준비…"):
-                    try:
-                        path, label = playable_path(site, ev, role)
-                    except Exception as e:
-                        path, label = None, "영상을 불러오지 못했습니다"
-                st.caption(f"**{role}** · {label}")
-                if path:
-                    st.video(str(path), autoplay=True, loop=True, muted=True)   # 자동·반복 재생, 컨트롤은 그대로
-                else:
-                    st.warning("영상 없음")
+                    _video(site, ev, role, key=f"v_{ev.id}_{role}")
 
         # ── 판정 버튼 ──
-        b = st.columns([1, 1, 1, 1, 1, 3])
+        b = st.columns([1, 1, 1, 1, 3])
         memo_key = f"memo_{ev.id}"
-        with b[5]:
+        with b[4]:
             memo = st.text_input("메모", value=r["memo"], key=memo_key, placeholder="한 줄 메모 (선택)")
         def _set(v):
             u = st.session_state.user
@@ -652,34 +711,116 @@ def page_review(site, date: str):
         with b[1]:
             if st.button(BTN["fp"], key="btn_fp", width="stretch"): _set("fp")
         with b[2]:
-            if st.button(BTN["unsure"], key="btn_unsure", width="stretch"): _set("unsure")
-        with b[3]:
             if st.button(BTN["skip"], key="btn_skip", width="stretch", disabled=idx >= len(flist) - 1):
                 st.session_state.idx = idx + 1; st.rerun()
-        with b[4]:
+        with b[3]:
             if st.button(BTN["undo"], key="btn_undo", width="stretch", disabled=not sess.data["history"]):
-                eid = sess.undo()
-                pos = next((i for i, x in enumerate(flist) if x["id"] == eid), None)
+                ids = sess.undo()
+                pos = next((i for i, x in enumerate(flist) if x["id"] in ids), None)
                 if pos is not None:
                     st.session_state.idx = pos
                 st.rerun()
         if r["my"] and memo != r["memo"]:
             sess.set_memo(ev.id, memo)
-    keyboard()
+    keyboard(grid=False)
     playback_rate(rate)
 
-    # ── 목록 ──
-    with st.expander(f"하루치 목록 (필터 {len(flist)}건)", expanded=False):
-        st.dataframe(
-            [{"#": i + 1, "시각": x["time"], "BCT": x["bct"].upper(), "판정": VERDICT_SHORT.get(x["verdict"], "-"),
-              **{lab: ("⭕" if x[key] is not None and x[key] >= site.thresholds.get(f"{key}_score", 0.5) else "❌" if x[key] is not None else "–")
-                 for lab, key in CLASSES},
-              "내 판정": VERDICTS.get(x["my"], ""), "메모": x["memo"], "id": x["id"]} for i, x in enumerate(flist)],
-            width="stretch", hide_index=True, height=360)
+
+# ── 4개씩 모드 (2×2) ──────────────────────────────────────────────────────
+def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str, rate: float):
+    """한 화면에 이벤트 4개. 1~4 체크 = 오탐 후보. P = 전부 정탐, N = 체크 오탐·나머지 정탐. 되돌리기는 묶음 단위."""
+    # 묶음의 시작은 4의 배수가 아니어도 되지만, 페이지 이동은 4칸씩
+    start = idx
+    batch = flist[start:start + GRID_N]
+    n_pages = (len(flist) + GRID_N - 1) // GRID_N
+    page_no = start // GRID_N + 1
+
+    nav = st.columns([1, 6, 1])
+    with nav[0]:
+        if st.button("◀ 이전 4개", disabled=start == 0, width="stretch"):
+            st.session_state.idx = max(0, start - GRID_N); st.rerun()
+    with nav[1]:
+        st.markdown(f"<div style='text-align:center;color:#6B7280;padding-top:6px'>"
+                    f"{start + 1}–{start + len(batch)} / {len(flist)} &nbsp;·&nbsp; 묶음 {page_no} / {n_pages}"
+                    f" &nbsp;·&nbsp; <b>1~4</b> 체크 · <b>P</b> 전부 정탐 · <b>N</b> 체크 오탐 · <b>Z</b> 되돌리기</div>", unsafe_allow_html=True)
+    with nav[2]:
+        if st.button("다음 4개 ▶", disabled=start + GRID_N >= len(flist), width="stretch"):
+            st.session_state.idx = min(start + GRID_N, len(flist) - 1); st.rerun()
+
+    # 체크 상태는 묶음이 바뀌면 초기화
+    batch_key = tuple(x["id"] for x in batch)
+    if st.session_state.get("grid_batch") != batch_key:
+        st.session_state.grid_batch = batch_key
+        for i in range(GRID_N):
+            st.session_state[f"chk_{i}"] = False
+
+    rows2 = [st.columns(2), st.columns(2)]
+    for i, r in enumerate(batch):
+        ev: Event = r["ev"]
+        col = rows2[i // 2][i % 2]
+        checked = bool(st.session_state.get(f"chk_{i}", False))
+        if r["my"] in ("tp", "fp"):
+            tile_key = f"tile_done_{r['my']}_{i}"
+        elif checked:
+            tile_key = f"tile_fp_{i}"
+        else:
+            tile_key = f"tile_{i}"
+        with col:
+            with st.container(key=tile_key):
+                verdict_txt, marks = _event_line(site, r)
+                mine = VERDICTS.get(r["my"], "")
+                vcls = {"tp": "v-tp", "fp": "v-fp"}.get(r["my"], "muted")
+                st.markdown(
+                    f'<div class="pm-tile-head"><span class="num">{i + 1}</span><code>{ev.id}</code>'
+                    f'<span class="{vcls}">{mine or "미검수"}</span></div>'
+                    f'<div class="pm-tile-sub">{ev.time_str} · <b>{ev.bct.upper()}</b> · <b>{verdict_txt}</b>'
+                    + (f' · {marks}' if marks else "") + '</div>',
+                    unsafe_allow_html=True,
+                )
+                vc = st.columns(len(site.cameras))
+                for c, role in zip(vc, site.cameras):
+                    with c:
+                        _video(site, ev, role, key=f"g_{ev.id}_{role}", label_role=False)
+                st.checkbox(f"{'☑' if checked else '☐'} {i + 1} · 오탐으로 표시", key=f"chk_{i}")
+
+    # 빈 칸 채우기 (마지막 묶음이 4개 미만일 때)
+    for i in range(len(batch), GRID_N):
+        with rows2[i // 2][i % 2]:
+            st.empty()
+
+    # ── 판정 버튼 ──
+    def _commit(mark_fp: bool):
+        u = st.session_state.user
+        verdicts = {}
+        for i, r in enumerate(batch):
+            verdicts[r["id"]] = "fp" if (mark_fp and st.session_state.get(f"chk_{i}", False)) else "tp"
+        sess.set_many(verdicts, reviewer, ip=u.get("ip", ""))
+        st.session_state.idx = min(start + GRID_N, len(flist) - 1) if start + GRID_N < len(flist) else start
+        st.session_state.grid_batch = None
+        st.rerun()
+
+    n_chk = sum(1 for i in range(len(batch)) if st.session_state.get(f"chk_{i}", False))
+    b = st.columns([1.3, 1.3, 1, 3])
+    with b[0]:
+        if st.button("전부 정탐 · P", key="btn_grid_tp", width="stretch"): _commit(False)
+    with b[1]:
+        if st.button(f"체크 오탐 · N ({n_chk})", key="btn_grid_fp", width="stretch", disabled=n_chk == 0): _commit(True)
+    with b[2]:
+        if st.button(BTN["undo"], key="btn_undo", width="stretch", disabled=not sess.data["history"]):
+            ids = sess.undo()
+            pos = next((i for i, x in enumerate(flist) if x["id"] in ids), None)
+            if pos is not None:
+                st.session_state.idx = pos
+            st.session_state.grid_batch = None
+            st.rerun()
+    with b[3]:
+        st.caption("체크한 것만 오탐, 나머지는 정탐으로 기록됩니다. 체크가 없으면 P 로 4개 모두 정탐.")
+    keyboard(grid=True)
+    playback_rate(rate)
 
 
 def export_clips(site, events: list[Event], sess: Session, root: Path, pend: dict[str, list[str]]) -> None:
-    """오탐·애매 이벤트의 원본 영상을 {site}/{date}/{event_id}/ 로 받는다. 어느 판정인지는 session.json 에. 정탐은 기록만."""
+    """오탐 이벤트의 원본 영상을 {site}/{date}/{event_id}/ 로 받는다. 정탐은 기록만."""
     idx = {e.id: e for e in events}
     targets = [idx[i] for ids in pend.values() for i in ids if i in idx]
     if not targets:
