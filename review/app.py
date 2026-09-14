@@ -30,7 +30,8 @@ from review.auth import list_users, verify_user  # noqa: E402
 
 APP_NAME = "오탐 검수 플랫폼"
 ORG = "Paimedialab"
-st.set_page_config(page_title=f"{ORG} {APP_NAME}", page_icon="🔎", layout="wide")
+# initial_sidebar_state="expanded": 창이 좁으면 Streamlit 이 사이드바를 접은 채 시작해 "사라진" 것처럼 보이므로 고정
+st.set_page_config(page_title=f"{ORG} {APP_NAME}", page_icon="🔎", layout="wide", initial_sidebar_state="expanded")
 
 PLAYABLE = {"h264", "avc1", "vp9", "vp8", "av1", "hevc"}   # 브라우저가 재생하는 코덱 (hevc 는 환경에 따라)
 BTN = {"tp": "정탐 ←", "fp": "오탐 →", "skip": "건너뛰기 ␣", "undo": "되돌리기 Z"}
@@ -295,78 +296,86 @@ def apply_filters(rows: list[dict], f: dict) -> list[dict]:
 #   1개씩: ← 정탐, → 오탐, Space 건너뛰기, Z 되돌리기
 #   그리드: P 전부 정탐, N 체크된 것 오탐(나머지 정탐), 1~4 체크 토글, Z 되돌리기
 # ══════════════════════════════════════════════════════════════════════════
-def keyboard(grid: bool = False):
-    try:
-        _keyboard_html(grid)
-    except Exception:       # 헤드리스 테스트(AppTest) 등 컴포넌트 미지원 환경
-        pass
-
-
-def playback_rate(rate: float):
-    """모든 <video> 의 재생 속도를 맞춘다.
-
-    컴포넌트 iframe 은 화면이 다시 그려질 때 버려지므로, 거기서 등록한 감시자는 죽는다.
-    → 감시 스크립트는 부모 창에 한 번만 심고(<script> 주입), 매 렌더에는 목표 속도만 갱신한다.
-    """
-    try:
-        components.html(f"""
-<script>
-(function(){{
-  const w = window.parent, doc = w.document;
-  w.__bctRate = {float(rate)};
-  if (!w.__bctRateInstalled) {{
-    w.__bctRateInstalled = true;
-    const s = doc.createElement('script');
-    s.textContent = `
-      (function(){{
-        const apply = () => document.querySelectorAll('video').forEach(v => {{
-          if (window.__bctRate && v.playbackRate !== window.__bctRate) v.playbackRate = window.__bctRate;
-        }});
-        window.__bctApplyRate = apply;
-        new MutationObserver(apply).observe(document.body, {{childList: true, subtree: true}});
-        ['play', 'loadedmetadata', 'canplay'].forEach(ev =>
-          document.addEventListener(ev, e => {{ if (e.target && e.target.tagName === 'VIDEO') apply(); }}, true));
-        setInterval(apply, 700);
-      }})();`;
-    doc.head.appendChild(s);
-  }}
-  if (w.__bctApplyRate) w.__bctApplyRate();
-}})();
-</script>""", height=0)
-    except Exception:
-        pass
-
-
-def _keyboard_html(grid: bool):
-    # 키 → 버튼 라벨 접두어. 리스너는 부모 문서에 한 번만 심고, 모드가 바뀌면 맵만 교체한다.
-    single = {"ArrowLeft": "정탐", "ArrowRight": "오탐", " ": "건너뛰기", "z": "되돌리기", "Z": "되돌리기"}
-    gridmap = {"p": "전부 정탐", "P": "전부 정탐", "n": "체크 오탐", "N": "체크 오탐", "z": "되돌리기", "Z": "되돌리기",
+KEYMAP_SINGLE = {"ArrowLeft": "정탐", "ArrowRight": "오탐", " ": "건너뛰기", "z": "되돌리기", "Z": "되돌리기"}
+KEYMAP_GRID = {"p": "전부 정탐", "P": "전부 정탐", "n": "체크 오탐", "N": "체크 오탐", "z": "되돌리기", "Z": "되돌리기",
                "1": "☐ 1", "2": "☐ 2", "3": "☐ 3", "4": "☐ 4"}
-    m = __import__("json").dumps(gridmap if grid else single, ensure_ascii=False)
-    components.html(f"""
+
+# 페이지에 직접 심는 헬퍼 스크립트 (iframe 없음). 매 렌더마다 실행돼도 안전하도록 멱등으로 짠다:
+#   · 키맵/속도는 항상 최신 값으로 덮어쓴다
+#   · 리스너·감시자는 한 번만 설치하되, 같은 문서에서 이미 설치됐어도 페이지 교체 후엔 다시 설치된다
+#   · 브라우저가 자동재생을 막아 멈춘 <video> 는 다시 play() 시도 (동시 8개일 때 일부만 재생되는 경우)
+_HELPER_JS = """
 <script>
-(function(){{
-  const w = window.parent, doc = w.document;
-  w.__bctKeyMap = {m};
-  if (w.__bctKeysInstalled) return; w.__bctKeysInstalled = true;
-  doc.addEventListener('keydown', (e) => {{
-    const tag = (e.target && e.target.tagName) || '';
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    const label = (w.__bctKeyMap || {{}})[e.key]; if (!label) return;
-    // 체크박스(☐/☑ n)는 라벨의 숫자만 맞추고, 버튼은 접두어로 찾는다
-    let el = null;
-    if (label.startsWith('☐ ')) {{
-      const n = label.slice(2);
-      el = [...doc.querySelectorAll('label')].find(l => /^[☐☑]\\s*(\\d)/.test((l.innerText||'').trim()) && (l.innerText||'').trim().match(/^[☐☑]\\s*(\\d)/)[1] === n);
-      if (el) {{ const inp = el.querySelector('input[type=checkbox]'); if (inp) el = inp; }}
-    }} else {{
-      el = [...doc.querySelectorAll('button')].find(b => (b.innerText || '').trim().startsWith(label));
-    }}
-    if (el) {{ e.preventDefault(); el.click(); }}
-  }}, true);
-}})();
-</script>""", height=0)
+(function(){
+  const w = window;
+  w.__bctRate   = __RATE__;
+  w.__bctKeyMap = __KEYMAP__;
+
+  const apply = () => {
+    const vids = document.querySelectorAll('video');
+    vids.forEach(v => {
+      if (w.__bctRate && v.playbackRate !== w.__bctRate) v.playbackRate = w.__bctRate;
+      // 모드 전환 등으로 다시 만들어진 플레이어는 autoplay 속성 없이 오기도 한다 → 속성과 무관하게 우리가 관리
+      if (!v.__bctManaged) { v.__bctManaged = true; v.loop = true; v.muted = true; }
+      if (v.paused && !v.ended && !v.__bctUserPaused && v.readyState >= 2) {
+        const pr = v.play(); if (pr && pr.catch) pr.catch(() => {});
+      }
+    });
+  };
+  w.__bctApply = apply;
+
+  if (!w.__bctInstalled) {
+    w.__bctInstalled = true;
+    // 사용자가 컨트롤로 직접 멈춘 영상만 기억 (우리 play() 실패로 생기는 pause 는 __bctManaged 직후라 제외)
+    document.addEventListener('pause', e => {
+      const v = e.target; if (!v || v.tagName !== 'VIDEO' || v.ended) return;
+      if (v.readyState >= 3 && v.currentTime > 0.2) v.__bctUserPaused = true;
+    }, true);
+    document.addEventListener('play',  e => { const v = e.target; if (v && v.tagName === 'VIDEO') { v.__bctUserPaused = false; apply(); } }, true);
+    ['loadedmetadata', 'canplay'].forEach(ev => document.addEventListener(ev, e => { if (e.target && e.target.tagName === 'VIDEO') apply(); }, true));
+    new MutationObserver(() => apply()).observe(document.body, {childList: true, subtree: true});
+    setInterval(apply, 800);
+
+    document.addEventListener('keydown', (e) => {
+      const tag = (e.target && e.target.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target && e.target.isContentEditable)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const label = (w.__bctKeyMap || {})[e.key]; if (!label) return;
+      let el = null;
+      if (label.startsWith('☐ ')) {
+        const n = label.slice(2);
+        el = [...document.querySelectorAll('label')].find(l => { const m = (l.innerText || '').trim().match(/^[☐☑]\\s*(\\d)/); return m && m[1] === n; });
+        if (el) { const inp = el.querySelector('input[type=checkbox]'); if (inp) el = inp; }
+      } else {
+        el = [...document.querySelectorAll('button')].find(b => (b.innerText || '').trim().startsWith(label));
+      }
+      if (el) { e.preventDefault(); el.click(); }
+    }, true);
+  }
+  apply();
+})();
+</script>
+"""
+
+
+def inject_helpers(grid: bool, rate: float) -> None:
+    """키보드 단축키 + 재생 속도 + 자동재생 복구 스크립트를 페이지에 심는다 (컴포넌트 iframe 없음)."""
+    import json as _json
+    html = _HELPER_JS.replace("__RATE__", str(float(rate))).replace("__KEYMAP__", _json.dumps(KEYMAP_GRID if grid else KEYMAP_SINGLE, ensure_ascii=False))
+    try:
+        st.html(html, unsafe_allow_javascript=True)
+    except TypeError:                      # 구버전 Streamlit: 파라미터 없음 → 컴포넌트 iframe 으로 폴백
+        components.html(html.replace("const w = window;", "const w = window.parent; const document = w.document;"), height=0)
+    except Exception:                      # 헤드리스 테스트 등
+        pass
+
+
+def keyboard(grid: bool = False):          # 하위호환 (호출부는 inject_helpers 로 통일)
+    pass
+
+
+def playback_rate(rate: float):            # 하위호환
+    pass
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -722,8 +731,7 @@ def review_single(site, flist: list[dict], idx: int, sess: Session, reviewer: st
                 st.rerun()
         if r["my"] and memo != r["memo"]:
             sess.set_memo(ev.id, memo)
-    keyboard(grid=False)
-    playback_rate(rate)
+    inject_helpers(grid=False, rate=rate)
 
 
 # ── 4개씩 모드 (2×2) ──────────────────────────────────────────────────────
@@ -755,6 +763,7 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
             st.session_state[f"chk_{i}"] = False
 
     rows2 = [st.columns(2), st.columns(2)]
+    chk_now: dict[int, bool] = {}                 # 이번 렌더의 체크 값 (위젯 반환값 — session_state 보다 한 박자 빠름)
     for i, r in enumerate(batch):
         ev: Event = r["ev"]
         col = rows2[i // 2][i % 2]
@@ -781,7 +790,7 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
                 for c, role in zip(vc, site.cameras):
                     with c:
                         _video(site, ev, role, key=f"g_{ev.id}_{role}", label_role=False)
-                st.checkbox(f"{'☑' if checked else '☐'} {i + 1} · 오탐으로 표시", key=f"chk_{i}")
+                chk_now[i] = st.checkbox(f"{'☑' if checked else '☐'} {i + 1} · 오탐으로 표시", key=f"chk_{i}")
 
     # 빈 칸 채우기 (마지막 묶음이 4개 미만일 때)
     for i in range(len(batch), GRID_N):
@@ -793,13 +802,13 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
         u = st.session_state.user
         verdicts = {}
         for i, r in enumerate(batch):
-            verdicts[r["id"]] = "fp" if (mark_fp and st.session_state.get(f"chk_{i}", False)) else "tp"
+            verdicts[r["id"]] = "fp" if (mark_fp and chk_now.get(i, False)) else "tp"
         sess.set_many(verdicts, reviewer, ip=u.get("ip", ""))
         st.session_state.idx = min(start + GRID_N, len(flist) - 1) if start + GRID_N < len(flist) else start
         st.session_state.grid_batch = None
         st.rerun()
 
-    n_chk = sum(1 for i in range(len(batch)) if st.session_state.get(f"chk_{i}", False))
+    n_chk = sum(1 for i in range(len(batch)) if chk_now.get(i, False))
     b = st.columns([1.3, 1.3, 1, 3])
     with b[0]:
         if st.button("전부 정탐 · P", key="btn_grid_tp", width="stretch"): _commit(False)
@@ -815,8 +824,7 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
             st.rerun()
     with b[3]:
         st.caption("체크한 것만 오탐, 나머지는 정탐으로 기록됩니다. 체크가 없으면 P 로 4개 모두 정탐.")
-    keyboard(grid=True)
-    playback_rate(rate)
+    inject_helpers(grid=True, rate=rate)
 
 
 def export_clips(site, events: list[Event], sess: Session, root: Path, pend: dict[str, list[str]]) -> None:
