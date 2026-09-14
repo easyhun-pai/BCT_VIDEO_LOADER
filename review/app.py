@@ -3,14 +3,12 @@
 실행:  scripts\\review_app.bat   (또는  python -m streamlit run review/app.py)
 흐름:  현장 선택 → 일자 선택 → 하루치 목록·필터 → 검수(정탐/오탐, 1개씩 또는 2×2 그리드) → 오탐 내보내기
 저장:  {저장루트}/{site}/{date}/session.json  (판정), {event_id}/{hook,ppe}.mp4 (오탐 학습용 클립)
+공통 화면 부품(로그인·CSS·영상·단축키)은 review/webui.py — 성능 검수 앱(perf_app.py)과 같이 쓴다.
 """
 from __future__ import annotations
 
-import os
-import shutil
-import subprocess
 import sys
-from datetime import date as _date, datetime, time as _time
+from datetime import date as _date, time as _time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -18,169 +16,25 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import streamlit as st  # noqa: E402
-import streamlit.components.v1 as components  # noqa: E402
 
-from review import config as cfgmod  # noqa: E402
-from review.access import SiteAccess  # noqa: E402
-from review.catalog import Event, list_days, list_events, minio_client  # noqa: E402
+from review import webui  # noqa: E402
+from review.catalog import Event, list_events  # noqa: E402
 from review.download import fetch_events  # noqa: E402
 from review.influx import join_events, query_day, reasons_from  # noqa: E402
 from review.session import VERDICTS, Session  # noqa: E402
-from review.auth import list_users, verify_user  # noqa: E402
+from review.webui import (CLASSES, VERDICT_KO, VERDICT_SHORT, access, cached_days, class_marks, client,  # noqa: E402
+                          header, inject_css, out_root, page_login, pills, settings)
 
 APP_NAME = "오탐 검수 플랫폼"
-ORG = "Paimedialab"
-# initial_sidebar_state="expanded": 창이 좁으면 Streamlit 이 사이드바를 접은 채 시작해 "사라진" 것처럼 보이므로 고정
-st.set_page_config(page_title=f"{ORG} {APP_NAME}", page_icon="🔎", layout="wide", initial_sidebar_state="expanded")
+webui.setup(APP_NAME, "🔎")
 
-PLAYABLE = {"h264", "avc1", "vp9", "vp8", "av1", "hevc"}   # 브라우저가 재생하는 코덱 (hevc 는 환경에 따라)
 BTN = {"tp": "정탐 ←", "fp": "오탐 →", "skip": "건너뛰기 ␣", "undo": "되돌리기 Z"}
 GRID_N = 4                                   # 그리드 모드: 한 화면에 이벤트 4개 (2×2), 카메라 2대면 영상 8개
-VERDICT_KO = {"allowed": "출입 승인 ✅", "denied": "출입 거부 ❌", "": "판정 정보 없음"}
-VERDICT_SHORT = {"allowed": "승인", "denied": "거부", "": "-"}
-CLASSES = (("안전모", "helmet"), ("하네스", "harness"), ("안전고리", "hook"))
-
-
-def class_marks(r: dict, thresholds: dict) -> str:
-    """점수·임계값 → '안전모 ⭕ · 하네스 ⭕ · 안전고리 ❌' (엣지 decision_engine 과 같은 기준)."""
-    out = []
-    for label, key in CLASSES:
-        v = r.get(key)
-        if v is None:
-            out.append(f"{label} –")
-        else:
-            out.append(f"{label} {'⭕' if v >= thresholds.get(f'{key}_score', 0.5) else '❌'}")
-    return " · ".join(out)
-
-CSS = """
-<style>
-/* Streamlit 기본 장식 제거 */
-#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"],
-.stDeployButton, [data-testid="stAppDeployButton"] { display:none !important; }
-header[data-testid="stHeader"] { background:transparent; height:0; }
-.block-container { padding-top:1.1rem; padding-bottom:3rem; max-width:1280px; }
-/* 팔레트: 화이트 바탕 + 블루(#2563EB) 포인트. 판정색만 의미색(초록/빨강/회색) 유지 */
-/* 상단 헤더 */
-.pm-head { display:flex; align-items:baseline; gap:14px; border-bottom:1px solid #E3E8EF; padding:2px 0 10px; margin:0 0 18px; }
-.pm-head .eyebrow { font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; color:#2563EB; font-weight:700; }
-.pm-head h1 { font-size:21px; margin:0; font-weight:700; letter-spacing:-.01em; color:#111827; }
-.pm-head .crumb { margin-left:auto; color:#6B7280; font-size:13px; }
-/* 상태 알약 */
-.pm-pills { display:flex; gap:8px; flex-wrap:wrap; margin:0 0 12px; }
-.pm-pill { border:1px solid #E3E8EF; border-radius:999px; padding:2px 12px; font-size:13px; background:#F5F7FA; color:#4B5563; white-space:nowrap; }
-.pm-pill b { color:#111827; font-weight:600; }
-.pm-pill.fp b { color:#DC2626; } .pm-pill.ok b { color:#16A34A; } .pm-pill.warn { border-color:#F59E0B; background:#FFFBEB; }
-/* 현재 이벤트 카드 */
-.pm-ev { border:1px solid #E3E8EF; border-left:4px solid #2563EB; background:#FFFFFF; padding:10px 14px; margin:4px 0 10px; font-size:14px; line-height:1.7; border-radius:0 6px 6px 0; }
-.pm-ev code { font-family:ui-monospace,Consolas,monospace; font-size:13px; background:#EFF4FF; color:#1E3A8A; padding:1px 6px; border-radius:3px; }
-.pm-ev .v-tp { color:#16A34A; font-weight:700; } .pm-ev .v-fp { color:#DC2626; font-weight:700; } .pm-ev .v-un { color:#6B7280; font-weight:700; }
-.pm-ev .muted { color:#6B7280; }
-/* 액션 패널: 이벤트 카드 + 영상 + 판정 버튼 + 메모를 한 박스로 묶음. 미검수=하늘색, 판정하면 그 색으로 */
-.st-key-action_panel { background:#EFF6FF; border:1px solid #BFDBFE; border-radius:12px; padding:16px 18px 12px; margin:4px 0 14px; }
-.st-key-action_panel .pm-ev { border-color:#BFDBFE; }
-.st-key-action_panel [data-testid="stCaptionContainer"] { color:#1E3A8A; }
-.st-key-action_panel_tp { background:#F0FDF4; border-color:#BBF7D0; }
-.st-key-action_panel_tp .pm-ev { border-color:#BBF7D0; }
-.st-key-action_panel_tp [data-testid="stCaptionContainer"] { color:#166534; }
-.st-key-action_panel_fp { background:#FEF2F2; border-color:#FECACA; }
-.st-key-action_panel_fp .pm-ev { border-color:#FECACA; }
-.st-key-action_panel_fp [data-testid="stCaptionContainer"] { color:#991B1B; }
-/* 그리드 타일 (2×2). 체크(오탐 후보)=연빨강, 이미 판정된 것은 판정색 */
-.st-key-tile_0, .st-key-tile_1, .st-key-tile_2, .st-key-tile_3,
-.st-key-tile_fp_0, .st-key-tile_fp_1, .st-key-tile_fp_2, .st-key-tile_fp_3,
-.st-key-tile_done_tp_0, .st-key-tile_done_tp_1, .st-key-tile_done_tp_2, .st-key-tile_done_tp_3,
-.st-key-tile_done_fp_0, .st-key-tile_done_fp_1, .st-key-tile_done_fp_2, .st-key-tile_done_fp_3
-  { border:1px solid #BFDBFE; background:#EFF6FF; border-radius:10px; padding:10px 12px 8px; margin:0 0 10px; }
-.st-key-tile_fp_0, .st-key-tile_fp_1, .st-key-tile_fp_2, .st-key-tile_fp_3 { background:#FEF2F2; border-color:#FCA5A5; box-shadow:0 0 0 2px #FECACA inset; }
-.st-key-tile_done_tp_0, .st-key-tile_done_tp_1, .st-key-tile_done_tp_2, .st-key-tile_done_tp_3 { background:#F0FDF4; border-color:#BBF7D0; }
-.st-key-tile_done_fp_0, .st-key-tile_done_fp_1, .st-key-tile_done_fp_2, .st-key-tile_done_fp_3 { background:#FEF2F2; border-color:#FECACA; }
-.pm-tile-head { display:flex; align-items:center; gap:10px; font-size:13px; margin:0 0 4px; }
-.pm-tile-head .num { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:6px; background:#2563EB; color:#fff; font-weight:700; font-size:13px; }
-.pm-tile-head code { font-family:ui-monospace,Consolas,monospace; font-size:12px; background:#fff; padding:1px 6px; border-radius:3px; color:#1E3A8A; border:1px solid #E3E8EF; }
-.pm-tile-head .v-tp { color:#16A34A; font-weight:700; } .pm-tile-head .v-fp { color:#DC2626; font-weight:700; } .pm-tile-head .muted { color:#6B7280; }
-.pm-tile-sub { font-size:12.5px; color:#374151; margin:0 0 6px; }
-/* 그리드 판정 버튼 */
-.st-key-btn_grid_tp button { border-color:#16A34A; color:#16A34A; font-weight:700; }
-.st-key-btn_grid_tp button:hover { background:#DCFCE7; }
-.st-key-btn_grid_fp button { background:#DC2626; border-color:#DC2626; color:#fff; font-weight:700; }
-.st-key-btn_grid_fp button:hover { background:#B91C1C; border-color:#B91C1C; }
-/* 판정 버튼 */
-.st-key-btn_tp button { border-color:#16A34A; color:#16A34A; font-weight:600; }
-.st-key-btn_tp button:hover { background:#DCFCE7; }
-.st-key-btn_fp button { background:#DC2626; border-color:#DC2626; color:#FFFFFF; font-weight:600; }
-.st-key-btn_fp button:hover { background:#B91C1C; border-color:#B91C1C; }
-.st-key-btn_skip button, .st-key-btn_undo button { color:#4B5563; }
-/* 카드·테두리 */
-div[data-testid="stVerticalBlockBorderWrapper"] { border-color:#E3E8EF !important; background:#FFFFFF; }
-/* 사이드바 */
-section[data-testid="stSidebar"] { background:#F8FAFC; border-right:1px solid #E3E8EF; }
-section[data-testid="stSidebar"] .block-container { padding-top:1rem; }
-h3 { font-size:17px !important; color:#111827; }
-</style>
-"""
-
-
-def inject_css() -> None:
-    st.markdown(CSS, unsafe_allow_html=True)
-
-
-def header(crumb: str = "") -> None:
-    st.markdown(
-        f'<div class="pm-head"><span class="eyebrow">{ORG}</span><h1>{APP_NAME}</h1><span class="crumb">{crumb}</span></div>',
-        unsafe_allow_html=True,
-    )
-
-
-def pills(items: list[tuple[str, str, str]]) -> None:
-    """[(라벨, 값, css클래스)] → 알약 한 줄."""
-    html = "".join(f'<span class="pm-pill {cls}">{lab} <b>{val}</b></span>' for lab, val, cls in items)
-    st.markdown(f'<div class="pm-pills">{html}</div>', unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # 설정 · 접근
 # ══════════════════════════════════════════════════════════════════════════
-@st.cache_resource(show_spinner=False)
-def settings():
-    return cfgmod.load()
-
-
-def out_root() -> tuple[Path, str]:
-    return settings().resolve_out_root(os.environ.get("BCT_REVIEW_OUT") or None)
-
-
-def cache_root() -> Path:
-    """영상 캐시는 NAS 가 아니라 항상 로컬 (재생용 임시 파일)."""
-    st_ = settings()
-    fb = Path(st_.local_fallback)
-    if not fb.is_absolute():
-        fb = (st_.cfg_dir / fb).resolve()
-    p = fb / "_cache"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def access(site) -> SiteAccess:
-    key = f"_acc_{site.code}"
-    if key not in st.session_state:
-        acc = SiteAccess(site, quiet=True)
-        acc.__enter__()                       # tunnel 이면 ssh 프로세스가 앱 수명 동안 유지
-        st.session_state[key] = acc
-    return st.session_state[key]
-
-
-def client(site):
-    site.require_secrets()
-    acc = access(site)
-    return minio_client(acc.minio_endpoint, site.minio_access, site.minio_secret, site.minio_secure)
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def cached_days(code: str) -> dict:
-    site = settings().site(code)
-    return list_days(client(site), site.minio_bucket)
-
-
 def load_day(site, date: str):
     tz = settings().timezone
     c = client(site)
@@ -195,49 +49,6 @@ def load_day(site, date: str):
         except Exception as e:  # Influx 가 죽어도 목록은 나오게
             err = str(e)
     return events, matched, stats, err
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# 영상 (로컬 캐시 → 필요 시 H.264 변환)
-# ══════════════════════════════════════════════════════════════════════════
-def _codec(path: Path) -> str:
-    if not shutil.which("ffprobe"):
-        return "?"
-    try:
-        out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
-                              "stream=codec_name", "-of", "csv=p=0", str(path)],
-                             capture_output=True, text=True, timeout=20)
-        return out.stdout.strip().lower() or "?"
-    except Exception:
-        return "?"
-
-
-def playable_path(site, ev: Event, role: str) -> tuple[Path | None, str]:
-    """(재생 가능한 로컬 파일, 라벨). _tg(박스) 우선, 없으면 학습용."""
-    key, label = ev.key_for(role, tg=True), "판정 표시 영상"
-    if key is None:
-        key, label = ev.key_for(role), "원본 영상"
-    if key is None:
-        return None, "영상 없음"
-    d = cache_root() / site.code / ev.date / ev.id
-    d.mkdir(parents=True, exist_ok=True)
-    kind = "tg" if key.startswith(site.tg_prefix) else "train"
-    raw = d / f"{role}_{kind}.mp4"
-    h264 = d / f"{role}_{kind}_h264.mp4"
-    if h264.exists() and h264.stat().st_size > 0:
-        return h264, label
-    if not (raw.exists() and raw.stat().st_size > 0):
-        client(site).fget_object(site.minio_bucket, key, str(raw))
-    codec = _codec(raw)
-    if codec in PLAYABLE or codec == "?" or not shutil.which("ffmpeg"):
-        return raw, label
-    # mp4v 등 브라우저 미지원 → H.264 로 한 번만 변환
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(raw), "-c:v", "libx264", "-preset", "veryfast",
-                    "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(h264)],
-                   capture_output=True, timeout=120)
-    if h264.exists() and h264.stat().st_size > 0:
-        return h264, label
-    return raw, label + " (재생이 안 될 수 있음)"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -300,155 +111,12 @@ KEYMAP_SINGLE = {"ArrowLeft": "정탐", "ArrowRight": "오탐", " ": "건너뛰�
 KEYMAP_GRID = {"p": "전부 정탐", "P": "전부 정탐", "n": "체크 오탐", "N": "체크 오탐", "z": "되돌리기", "Z": "되돌리기",
                "1": "☐ 1", "2": "☐ 2", "3": "☐ 3", "4": "☐ 4"}
 
-# 페이지에 직접 심는 헬퍼 스크립트 (iframe 없음). 매 렌더마다 실행돼도 안전하도록 멱등으로 짠다:
-#   · 키맵/속도는 항상 최신 값으로 덮어쓴다
-#   · 리스너·감시자는 한 번만 설치하되, 같은 문서에서 이미 설치됐어도 페이지 교체 후엔 다시 설치된다
-#   · 브라우저가 자동재생을 막아 멈춘 <video> 는 다시 play() 시도 (동시 8개일 때 일부만 재생되는 경우)
-_HELPER_JS = """
-<script>
-(function(){
-  const w = window;
-  w.__bctRate   = __RATE__;
-  w.__bctKeyMap = __KEYMAP__;
-
-  const apply = () => {
-    const vids = document.querySelectorAll('video');
-    vids.forEach(v => {
-      if (w.__bctRate && v.playbackRate !== w.__bctRate) v.playbackRate = w.__bctRate;
-      // 모드 전환 등으로 다시 만들어진 플레이어는 autoplay 속성 없이 오기도 한다 → 속성과 무관하게 우리가 관리
-      if (!v.__bctManaged) { v.__bctManaged = true; v.loop = true; v.muted = true; }
-      if (v.paused && !v.ended && !v.__bctUserPaused && v.readyState >= 2) {
-        const pr = v.play(); if (pr && pr.catch) pr.catch(() => {});
-      }
-    });
-  };
-  w.__bctApply = apply;
-
-  if (!w.__bctInstalled) {
-    w.__bctInstalled = true;
-    // 사용자가 컨트롤로 직접 멈춘 영상만 기억 (우리 play() 실패로 생기는 pause 는 __bctManaged 직후라 제외)
-    document.addEventListener('pause', e => {
-      const v = e.target; if (!v || v.tagName !== 'VIDEO' || v.ended) return;
-      if (v.readyState >= 3 && v.currentTime > 0.2) v.__bctUserPaused = true;
-    }, true);
-    document.addEventListener('play',  e => { const v = e.target; if (v && v.tagName === 'VIDEO') { v.__bctUserPaused = false; apply(); } }, true);
-    ['loadedmetadata', 'canplay'].forEach(ev => document.addEventListener(ev, e => { if (e.target && e.target.tagName === 'VIDEO') apply(); }, true));
-    new MutationObserver(() => apply()).observe(document.body, {childList: true, subtree: true});
-    setInterval(apply, 800);
-
-    document.addEventListener('keydown', (e) => {
-      const tag = (e.target && e.target.tagName) || '';
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target && e.target.isContentEditable)) return;
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const label = (w.__bctKeyMap || {})[e.key]; if (!label) return;
-      let el = null;
-      if (label.startsWith('☐ ')) {
-        const n = label.slice(2);
-        el = [...document.querySelectorAll('label')].find(l => { const m = (l.innerText || '').trim().match(/^[☐☑]\\s*(\\d)/); return m && m[1] === n; });
-        if (el) { const inp = el.querySelector('input[type=checkbox]'); if (inp) el = inp; }
-      } else {
-        el = [...document.querySelectorAll('button')].find(b => (b.innerText || '').trim().startsWith(label));
-      }
-      if (el) { e.preventDefault(); el.click(); }
-    }, true);
-  }
-  apply();
-})();
-</script>
-"""
-
-
 def inject_helpers(grid: bool, rate: float) -> None:
-    """키보드 단축키 + 재생 속도 + 자동재생 복구 스크립트를 페이지에 심는다 (컴포넌트 iframe 없음)."""
-    import json as _json
-    html = _HELPER_JS.replace("__RATE__", str(float(rate))).replace("__KEYMAP__", _json.dumps(KEYMAP_GRID if grid else KEYMAP_SINGLE, ensure_ascii=False))
-    try:
-        st.html(html, unsafe_allow_javascript=True)
-    except TypeError:                      # 구버전 Streamlit: 파라미터 없음 → 컴포넌트 iframe 으로 폴백
-        components.html(html.replace("const w = window;", "const w = window.parent; const document = w.document;"), height=0)
-    except Exception:                      # 헤드리스 테스트 등
-        pass
-
-
-def keyboard(grid: bool = False):          # 하위호환 (호출부는 inject_helpers 로 통일)
-    pass
-
-
-def playback_rate(rate: float):            # 하위호환
-    pass
-
-
-# ══════════════════════════════════════════════════════════════════════════
-# 로그인
-# ══════════════════════════════════════════════════════════════════════════
-def client_ip() -> str:
-    """접속 IP. 공통 계정을 사람별로 구분하는 근거. localhost 접속이면 127.0.0.1."""
-    try:
-        ip = st.context.ip_address           # Streamlit ≥1.44. localhost 면 None
-    except Exception:
-        ip = None
-    if not isinstance(ip, str) or not ip.strip():   # 헤드리스 테스트에선 Mock 이 온다
-        return "127.0.0.1"
-    return ip.strip()
-
-
-def log_login(user: dict) -> None:
-    """저장 루트에 _logins.jsonl 한 줄 추가 (누가·어디서·언제)."""
-    try:
-        root, _ = out_root()
-        root.mkdir(parents=True, exist_ok=True)
-        rec = {"at": datetime.now().isoformat(timespec="seconds"), "id": user["id"], "ip": user["ip"]}
-        with open(root / "_logins.jsonl", "a", encoding="utf-8") as f:
-            f.write(__import__("json").dumps(rec, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-
-
-def page_login():
-    st_ = settings()
-    header("로그인")
-    _, mid, _ = st.columns([1, 1.2, 1])
-    with mid:
-        with st.container(border=True):
-            st.markdown("**로그인**")
-            if not list_users(st_):
-                st.error("등록된 계정이 없습니다. 관리자에게 문의하세요.")
-                return
-            # 폼으로 묶으면 어느 칸에서든 Enter 로 제출되고, 입력값이 제출 시점에 함께 확정된다.
-            # (버튼만 쓰면 값 확정과 클릭이 따로 처리돼 방금 친 값이 반영되지 않는 경우가 있다)
-            with st.form("login_form", border=False, enter_to_submit=True):
-                uid = st.text_input("ID", key="login_id", autocomplete="username")
-                pw = st.text_input("비밀번호", type="password", key="login_pw", autocomplete="current-password")
-                submitted = st.form_submit_button("로그인", key="btn_login", type="primary", width="stretch")
-            if submitted:
-                u = verify_user(st_, uid, pw)
-                if u:
-                    u["ip"] = client_ip()
-                    u["at"] = datetime.now().isoformat(timespec="seconds")
-                    st.session_state.user = u
-                    st.session_state.pop("login_err", None)
-                    log_login(u)
-                    st.rerun()
-                st.session_state.login_err = True
-            if st.session_state.get("login_err"):
-                st.error("ID 또는 비밀번호가 맞지 않습니다.")
+    webui.inject_helpers(KEYMAP_GRID if grid else KEYMAP_SINGLE, rate)
 
 
 def sidebar_user():
-    u = st.session_state.get("user")
-    if not u:
-        return
-    with st.sidebar:
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            st.markdown(f"👤 **{u['name']}**")
-            st.caption(u.get("ip", ""))
-        with c2:
-            if st.button("로그아웃", key="btn_logout", width="stretch"):
-                for k in ("user", "site_code", "date", "loaded", "events", "matched", "stats", "sess", "idx"):
-                    st.session_state.pop(k, None)
-                st.rerun()
-        st.divider()
+    webui.sidebar_user(("site_code", "date", "loaded", "events", "matched", "stats", "sess", "idx"))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -500,13 +168,27 @@ def page_days(site):
             return
     if not days:
         st.warning("이벤트가 없습니다."); return
+    root, _ = out_root()
     latest = sorted(days)[-1]
+    recent = sorted(days)[-14:][::-1]                 # 표 행 순서 (최신이 위)
+    d_min = _date.fromisoformat(sorted(days)[0])
+    d_max = max(_date.today(), _date.fromisoformat(latest))
+
+    # 표에서 행을 누르면 일자 입력이 그 날짜로, 일자를 직접 바꾸면 표의 그 행이 선택된다
+    pick_key, tbl_key = f"day_pick_{site.code}", f"days_table_{site.code}"
+    webui.table_pick(recent, pick_key, tbl_key, latest, to_widget=_date.fromisoformat, from_widget=lambda d: d.isoformat(),
+                     clamp=lambda d: min(max(d, d_min), d_max))
+
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
-        pick = st.date_input("일자", value=_date.fromisoformat(latest), min_value=_date.fromisoformat(sorted(days)[0]),
-                             max_value=max(_date.today(), _date.fromisoformat(latest)))
+        pick = st.date_input("일자", min_value=d_min, max_value=d_max, key=pick_key)
     with c2:
-        st.metric("해당 일자 이벤트", sum(days.get(pick.isoformat(), {}).values()))
+        n_pick = sum(days.get(pick.isoformat(), {}).values())
+        st.metric("해당 일자 이벤트", n_pick)
+        p = day_progress(root, site.code, pick.isoformat(), n_pick)
+        st.markdown(f'<span class="pm-pill {p["cls"]}">{p["label"]} <b>{p["done"]}/{n_pick}</b></span>'
+                    + (f' <span class="muted" style="color:#6B7280;font-size:13px">정탐 {p["tp"]} · 오탐 {p["fp"]}</span>' if p["done"] else ""),
+                    unsafe_allow_html=True)
     with c3:
         st.write(""); st.write("")
         if st.button("이 날짜 열기 →", type="primary", width="stretch"):
@@ -514,9 +196,35 @@ def page_days(site):
             st.session_state.pop("loaded", None)
             st.rerun()
     st.subheader("최근 14일")
-    recent = sorted(days)[-14:]
-    st.dataframe([{"date": d, "total": sum(days[d].values()), **{b: days[d].get(b, 0) for b in site.bcts}} for d in reversed(recent)],
-                 width="stretch", hide_index=True)
+    table = []
+    for d in recent:
+        total = sum(days[d].values())
+        p = day_progress(root, site.code, d, total)
+        table.append({"일자": d, "상태": p["label"], "검수": f"{p['done']}/{total}", "정탐": p["tp"], "오탐": p["fp"],
+                      "이벤트": total, **{b: days[d].get(b, 0) for b in site.bcts}})
+    st.dataframe(table, width="stretch", hide_index=True, key=tbl_key,
+                 on_select="rerun", selection_mode=["single-row", "single-cell"])
+    webui.inject_table_dblclick("이 날짜 열기")
+
+
+DAY_STATUS = {"none": ("⚪ 미검수", ""), "doing": ("🟡 진행 중", "warn"), "done": ("✅ 완료", "ok")}
+
+
+def day_progress(root: Path, site_code: str, date: str, total: int) -> dict:
+    """저장 루트의 session.json 을 읽기만 해서 그 날의 검수 진행 상태를 낸다 (없으면 미검수, 파일을 만들지 않음).
+
+    일자 화면을 열 때마다 새로 읽으므로 다른 검수자가 진행한 것도 바로 반영된다.
+    """
+    tp = fp = done = 0
+    try:
+        data = __import__("json").loads((root / site_code / date / "session.json").read_text(encoding="utf-8"))
+        vs = [v.get("verdict") for v in (data.get("verdicts") or {}).values()]
+        tp, fp, done = vs.count("tp"), vs.count("fp"), len(vs)
+    except Exception:                         # 파일 없음·NAS 끊김·깨진 파일 → 미검수로 표시
+        pass
+    state = "none" if done == 0 else "done" if total and done >= total else "doing"
+    label, cls = DAY_STATUS[state]
+    return {"state": state, "label": label, "cls": cls, "done": done, "tp": tp, "fp": fp}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -655,19 +363,6 @@ def _event_line(site, r: dict) -> tuple[str, str]:
     return VERDICT_KO.get(r["verdict"], VERDICT_KO[""]), (class_marks(r, site.thresholds) if has_row else "")
 
 
-def _video(site, ev: Event, role: str, key: str, label_role: bool = True):
-    try:
-        path, label = playable_path(site, ev, role)
-    except Exception:
-        path, label = None, "영상을 불러오지 못했습니다"
-    if label_role:
-        st.caption(f"**{role}** · {label}")
-    if path:
-        st.video(str(path), autoplay=True, loop=True, muted=True)
-    else:
-        st.warning("영상 없음")
-
-
 # ── 1개씩 모드 ────────────────────────────────────────────────────────────
 def review_single(site, flist: list[dict], idx: int, sess: Session, reviewer: str, rate: float):
     r = flist[idx]
@@ -688,8 +383,14 @@ def review_single(site, flist: list[dict], idx: int, sess: Session, reviewer: st
 
     mine = VERDICTS.get(r["my"], "")
     vcls = {"tp": "v-tp", "fp": "v-fp"}.get(r["my"], "muted")
-    # 판정한 이벤트는 패널 색으로 바로 보이게 (미검수 하늘색 · 정탐 연두 · 오탐 연빨강)
-    with st.container(key=f"action_panel_{r['my']}" if r["my"] in ("tp", "fp") else "action_panel"):
+    # 판정한 이벤트는 패널 색으로 바로 보이게 (미검수 하늘색 · 미검수 거부 파스텔 노랑 · 정탐 연두 · 오탐 연빨강)
+    if r["my"] in ("tp", "fp"):
+        panel_key = f"action_panel_{r['my']}"
+    elif r["verdict"] == "denied":
+        panel_key = "action_panel_deny"
+    else:
+        panel_key = "action_panel"
+    with st.container(key=panel_key):
         verdict_txt, marks = _event_line(site, r)
         st.markdown(
             f'<div class="pm-ev"><code>{ev.id}</code> &nbsp; <span class="muted">{idx + 1} / {len(flist)}</span> &nbsp; '
@@ -703,7 +404,7 @@ def review_single(site, flist: list[dict], idx: int, sess: Session, reviewer: st
         for col, role in zip(vcols, site.cameras):
             with col:
                 with st.spinner(f"{role} 영상 준비…"):
-                    _video(site, ev, role, key=f"v_{ev.id}_{role}")
+                    webui.video(site, ev, role)
 
         # ── 판정 버튼 ──
         b = st.columns([1, 1, 1, 1, 3])
@@ -772,6 +473,8 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
             tile_key = f"tile_done_{r['my']}_{i}"
         elif checked:
             tile_key = f"tile_fp_{i}"
+        elif r["verdict"] == "denied":
+            tile_key = f"tile_deny_{i}"
         else:
             tile_key = f"tile_{i}"
         with col:
@@ -789,7 +492,7 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
                 vc = st.columns(len(site.cameras))
                 for c, role in zip(vc, site.cameras):
                     with c:
-                        _video(site, ev, role, key=f"g_{ev.id}_{role}", label_role=False)
+                        webui.video(site, ev, role, label_role=False)
                 chk_now[i] = st.checkbox(f"{'☑' if checked else '☐'} {i + 1} · 오탐으로 표시", key=f"chk_{i}")
 
     # 빈 칸 채우기 (마지막 묶음이 4개 미만일 때)
@@ -822,8 +525,6 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
                 st.session_state.idx = pos
             st.session_state.grid_batch = None
             st.rerun()
-    with b[3]:
-        st.caption("체크한 것만 오탐, 나머지는 정탐으로 기록됩니다. 체크가 없으면 P 로 4개 모두 정탐.")
     inject_helpers(grid=True, rate=rate)
 
 
