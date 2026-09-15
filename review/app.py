@@ -398,16 +398,16 @@ def review_single(site, flist: list[dict], idx: int, sess: Session, reviewer: st
 
     nav = st.columns([1, 6, 1])
     with nav[0]:
-        if st.button("◀ 이전", disabled=idx == 0, width="stretch"):
-            st.session_state.idx = idx - 1; st.rerun()
+        st.button("◀ 이전", disabled=idx == 0, width="stretch", on_click=_go, args=(idx - 1,))
     with nav[1]:
         opts = [f"{x['time']}  {x['bct']:6s}  {VERDICT_SHORT.get(x['verdict'], '-'):4s}  {VERDICTS.get(x['my'], '·')}  {x['id']}" for x in flist]
-        pick = st.selectbox("이벤트로 이동", range(len(flist)), index=idx, format_func=lambda i: opts[i], label_visibility="collapsed")
-        if pick != idx:
-            st.session_state.idx = pick; st.rerun()
+        st.session_state.single_pick = idx
+        st.selectbox("이벤트로 이동", range(len(flist)), format_func=lambda i: opts[i], label_visibility="collapsed",
+                     key="single_pick", on_change=lambda: _go(st.session_state.single_pick))
     with nav[2]:
-        if st.button("다음 ▶", disabled=idx >= len(flist) - 1, width="stretch"):
-            st.session_state.idx = idx + 1; st.rerun()
+        st.button("다음 ▶", disabled=idx >= len(flist) - 1, width="stretch", on_click=_go, args=(idx + 1,))
+    with st.spinner("영상 불러오는 중…"):
+        clips = webui.prefetch(site, [ev])
 
     mine = VERDICTS.get(r["my"], "")
     if r["my"] == "fp" and r["fp_classes"]:
@@ -433,8 +433,7 @@ def review_single(site, flist: list[dict], idx: int, sess: Session, reviewer: st
         vcols = st.columns(len(site.cameras))
         for col, role in zip(vcols, site.cameras):
             with col:
-                with st.spinner(f"{role} 영상 준비…"):
-                    webui.video(site, ev, role)
+                webui.video(site, ev, role, clip=clips.get((ev.id, role)))
 
         # ── 오탐 클래스 칩 (오탐 → 을 누를 때 함께 기록) ──
         cls_key = f"cls1_{ev.id}"
@@ -447,30 +446,31 @@ def review_single(site, flist: list[dict], idx: int, sess: Session, reviewer: st
         memo_key = f"memo_{ev.id}"
         with b[4]:
             memo = st.text_input("메모", value=r["memo"], key=memo_key, placeholder="한 줄 메모 (선택)")
-        def _set(v):
-            u = st.session_state.user
-            sess.set(ev.id, v, reviewer, st.session_state.get(memo_key, ""), ip=u.get("ip", ""), classes=cls_now)
-            st.session_state.idx = min(idx + 1, len(flist) - 1) if idx < len(flist) - 1 else idx
-            st.rerun()
+        next_idx = min(idx + 1, len(flist) - 1)
         with b[0]:
-            if st.button(BTN["tp"], key="btn_tp", width="stretch"): _set("tp")
+            st.button(BTN["tp"], key="btn_tp", width="stretch", on_click=_single_set,
+                      args=(sess, ev.id, "tp", reviewer, memo_key, cls_key, next_idx))
         with b[1]:
-            if st.button(BTN["fp"], key="btn_fp", width="stretch"): _set("fp")
+            st.button(BTN["fp"], key="btn_fp", width="stretch", on_click=_single_set,
+                      args=(sess, ev.id, "fp", reviewer, memo_key, cls_key, next_idx))
         with b[2]:
-            if st.button(BTN["skip"], key="btn_skip", width="stretch", disabled=idx >= len(flist) - 1):
-                st.session_state.idx = idx + 1; st.rerun()
+            st.button(BTN["skip"], key="btn_skip", width="stretch", disabled=idx >= len(flist) - 1, on_click=_go, args=(idx + 1,))
         with b[3]:
-            if st.button(BTN["undo"], key="btn_undo", width="stretch", disabled=not sess.data["history"]):
-                ids = sess.undo()
-                pos = next((i for i, x in enumerate(flist) if x["id"] in ids), None)
-                if pos is not None:
-                    st.session_state.idx = pos
-                st.rerun()
+            st.button(BTN["undo"], key="btn_undo", width="stretch", disabled=not sess.data["history"],
+                      on_click=_undo, args=(sess, [x["id"] for x in flist]))
         if r["my"] and memo != r["memo"]:
             sess.set_memo(ev.id, memo)
         if r["my"] == "fp" and sorted(cls_now) != sorted(r["fp_classes"]):
             sess.set_classes(ev.id, cls_now)
     inject_helpers(grid=False, rate=rate)
+    webui.prefetch_background(site, [x["ev"] for x in flist[idx + 1:idx + 3]])
+
+
+def _single_set(sess: Session, eid: str, verdict: str, reviewer: str, memo_key: str, cls_key: str, next_idx: int) -> None:
+    u = st.session_state.user
+    sess.set(eid, verdict, reviewer, st.session_state.get(memo_key, ""), ip=u.get("ip", ""),
+             classes=list(st.session_state.get(cls_key) or []))
+    st.session_state.idx = next_idx
 
 
 # ── 4개씩 모드 (2×2) ──────────────────────────────────────────────────────
@@ -488,13 +488,17 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
     start = idx
     batch = flist[start:start + GRID_N]
 
+    # 버튼은 모두 on_click 콜백: 스크립트가 돌기 전에 저장·이동을 끝내서 화면을 한 번만 그린다.
+    # (버튼 분기 안에서 st.rerun() 하면 예전 묶음을 한 번 더 그린 뒤 새 묶음을 그려 화면이 두 번 넘어간다)
     nav = st.columns([1, 6, 1])
     with nav[0]:
-        if st.button("◀ 이전 4개", disabled=start == 0, width="stretch"):
-            st.session_state.idx = max(0, start - GRID_N); st.rerun()
+        st.button("◀ 이전 4개", disabled=start == 0, width="stretch", on_click=_go, args=(max(0, start - GRID_N),))
     with nav[2]:
-        if st.button("다음 4개 ▶", disabled=start + GRID_N >= len(flist), width="stretch"):
-            st.session_state.idx = min(start + GRID_N, len(flist) - 1); st.rerun()
+        st.button("다음 4개 ▶", disabled=start + GRID_N >= len(flist), width="stretch",
+                  on_click=_go, args=(min(start + GRID_N, len(flist) - 1),))
+    with nav[1]:
+        with st.spinner("영상 불러오는 중…"):                # 8개를 한꺼번에 받아 타일이 같이 뜨게
+            clips = webui.prefetch(site, [r["ev"] for r in batch])
 
     # 체크 상태는 묶음이 바뀌면 판정 기록으로 다시 채운다 (오탐이면 체크 + 항목)
     batch_key = tuple(x["id"] for x in batch)
@@ -538,7 +542,7 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
                 vc = st.columns(len(site.cameras))
                 for c, role in zip(vc, site.cameras):
                     with c:
-                        webui.video(site, ev, role, label_role=False)
+                        webui.video(site, ev, role, label_role=False, clip=clips.get((ev.id, role)))
                 chk_now[i] = st.checkbox(f"{'☑' if checked else '☐'} {i + 1} · 오탐으로 표시", key=f"chk_{i}")
                 if chk_now[i]:
                     cls_now[i] = labeled_pills("오탐 내역", FP_CLASS_OPTS, fp_class_label, f"cls_{i}")
@@ -549,33 +553,46 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
             st.empty()
 
     # ── 판정 버튼 ──
-    def _commit(mark_fp: bool):
-        u = st.session_state.user
-        verdicts, classes = {}, {}
-        for i, r in enumerate(batch):
-            verdicts[r["id"]] = "fp" if (mark_fp and chk_now.get(i, False)) else "tp"
-            classes[r["id"]] = cls_now.get(i, [])
-        sess.set_many(verdicts, reviewer, ip=u.get("ip", ""), classes=classes)
-        if not shrinking:
-            st.session_state.idx = min(start + GRID_N, len(flist) - 1) if start + GRID_N < len(flist) else start
-        st.session_state.grid_batch = None
-        st.rerun()
-
+    ids = [r["id"] for r in batch]
+    next_idx = start if shrinking else (min(start + GRID_N, len(flist) - 1) if start + GRID_N < len(flist) else start)
     n_chk = sum(1 for i in range(len(batch)) if chk_now.get(i, False))
     b = st.columns([1.3, 1.3, 1, 3])
     with b[0]:
-        if st.button("전부 정탐 · P", key="btn_grid_tp", width="stretch"): _commit(False)
+        st.button("전부 정탐 · P", key="btn_grid_tp", width="stretch", on_click=_grid_commit, args=(sess, ids, reviewer, False, next_idx))
     with b[1]:
-        if st.button(f"체크 오탐 · N ({n_chk})", key="btn_grid_fp", width="stretch", disabled=n_chk == 0): _commit(True)
+        st.button(f"체크 오탐 · N ({n_chk})", key="btn_grid_fp", width="stretch", disabled=n_chk == 0,
+                  on_click=_grid_commit, args=(sess, ids, reviewer, True, next_idx))
     with b[2]:
-        if st.button(BTN["undo"], key="btn_undo", width="stretch", disabled=not sess.data["history"]):
-            ids = sess.undo()
-            pos = next((i for i, x in enumerate(flist) if x["id"] in ids), None)
-            if pos is not None:
-                st.session_state.idx = pos
-            st.session_state.grid_batch = None
-            st.rerun()
+        st.button(BTN["undo"], key="btn_undo", width="stretch", disabled=not sess.data["history"],
+                  on_click=_undo, args=(sess, [x["id"] for x in flist]))
     inject_helpers(grid=True, rate=rate, batch="|".join(batch_key))
+    # 다음 묶음 영상은 뒤에서 미리 받아 둔다 → P/N 누르면 바로 넘어간다
+    webui.prefetch_background(site, [r["ev"] for r in flist[start + GRID_N:start + 2 * GRID_N]])
+
+
+def _go(idx: int) -> None:
+    st.session_state.idx = idx
+
+
+def _grid_commit(sess: Session, ids: list[str], reviewer: str, mark_fp: bool, next_idx: int) -> None:
+    """P/N 콜백. 체크·칩 값은 위젯 상태(chk_i, cls_i)에서 읽는다 (콜백 시점엔 방금 누른 값까지 반영돼 있다)."""
+    u = st.session_state.user
+    verdicts, classes = {}, {}
+    for i, eid in enumerate(ids):
+        checked = bool(st.session_state.get(f"chk_{i}", False))
+        verdicts[eid] = "fp" if (mark_fp and checked) else "tp"
+        classes[eid] = list(st.session_state.get(f"cls_{i}") or []) if checked else []
+    sess.set_many(verdicts, reviewer, ip=u.get("ip", ""), classes=classes)
+    st.session_state.idx = next_idx
+    st.session_state.grid_batch = None
+
+
+def _undo(sess: Session, all_ids: list[str]) -> None:
+    ids = sess.undo()
+    pos = next((i for i, x in enumerate(all_ids) if x in ids), None)
+    if pos is not None:
+        st.session_state.idx = pos
+    st.session_state.grid_batch = None
 
 
 def export_day(site, plan: "export.DayPlan") -> None:

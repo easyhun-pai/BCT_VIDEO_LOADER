@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -226,37 +227,92 @@ def _codec(path: Path) -> str:
         return "?"
 
 
-def playable_path(site, ev: Event, role: str) -> tuple[Path | None, str]:
-    """(재생 가능한 로컬 파일, 라벨). _tg(박스) 우선, 없으면 학습용."""
+_FILE_LOCKS: dict[str, threading.Lock] = {}
+_FILE_LOCKS_GUARD = threading.Lock()
+
+
+def _file_lock(p: Path) -> threading.Lock:
+    """같은 캐시 파일을 화면용 받기와 뒤 미리받기가 동시에 쓰지 않게."""
+    with _FILE_LOCKS_GUARD:
+        return _FILE_LOCKS.setdefault(str(p), threading.Lock())
+
+
+def fetch_clip(mc, site, ev: Event, role: str, cache: Path) -> tuple[Path | None, str]:
+    """(재생 가능한 로컬 파일, 라벨). _tg(박스) 우선, 없으면 학습용. Streamlit 을 쓰지 않아 스레드에서도 부를 수 있다."""
     key, label = ev.key_for(role, tg=True), "판정 표시 영상"
     if key is None:
         key, label = ev.key_for(role), "원본 영상"
     if key is None:
         return None, "영상 없음"
-    d = cache_root() / site.code / ev.date / ev.id
+    d = cache / site.code / ev.date / ev.id
     d.mkdir(parents=True, exist_ok=True)
     kind = "tg" if key.startswith(site.tg_prefix) else "train"
     raw = d / f"{role}_{kind}.mp4"
     h264 = d / f"{role}_{kind}_h264.mp4"
-    if h264.exists() and h264.stat().st_size > 0:
-        return h264, label
-    if not (raw.exists() and raw.stat().st_size > 0):
-        client(site).fget_object(site.minio_bucket, key, str(raw))
-    codec = _codec(raw)
-    if codec in PLAYABLE or codec == "?" or not shutil.which("ffmpeg"):
-        return raw, label
-    # mp4v 등 브라우저 미지원 → H.264 로 한 번만 변환
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(raw), "-c:v", "libx264", "-preset", "veryfast",
-                    "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(h264)],
-                   capture_output=True, timeout=120)
-    if h264.exists() and h264.stat().st_size > 0:
-        return h264, label
-    return raw, label + " (재생이 안 될 수 있음)"
+    with _file_lock(raw):
+        if h264.exists() and h264.stat().st_size > 0:
+            return h264, label
+        if not (raw.exists() and raw.stat().st_size > 0):
+            mc.fget_object(site.minio_bucket, key, str(raw))
+        codec = _codec(raw)
+        if codec in PLAYABLE or codec == "?" or not shutil.which("ffmpeg"):
+            return raw, label
+        # mp4v 등 브라우저 미지원 → H.264 로 한 번만 변환
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(raw), "-c:v", "libx264", "-preset", "veryfast",
+                        "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-an", str(h264)],
+                       capture_output=True, timeout=120)
+        if h264.exists() and h264.stat().st_size > 0:
+            return h264, label
+        return raw, label + " (재생이 안 될 수 있음)"
 
 
-def video(site, ev: Event, role: str, label_role: bool = True):
+def playable_path(site, ev: Event, role: str) -> tuple[Path | None, str]:
+    return fetch_clip(client(site), site, ev, role, cache_root())
+
+
+def prefetch(site, events: list[Event]) -> dict[tuple[str, str], tuple[Path | None, str]]:
+    """화면에 올릴 영상을 한꺼번에(병렬) 준비한다 → 타일이 하나씩 뜨지 않고 같이 뜬다. {(event_id, role): (path, label)}"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    todo = [(ev, role) for ev in events for role in site.cameras]
+    if not todo:
+        return {}
+    mc, cache = client(site), cache_root()
+
+    def one(item):
+        ev, role = item
+        try:
+            return fetch_clip(mc, site, ev, role, cache)
+        except Exception:
+            return None, "영상을 불러오지 못했습니다"
+    with ThreadPoolExecutor(max_workers=min(8, len(todo))) as ex:
+        return {(ev.id, role): res for (ev, role), res in zip(todo, ex.map(one, todo))}
+
+
+_BG_FETCHING: set[tuple[str, str]] = set()
+
+
+def prefetch_background(site, events: list[Event]) -> None:
+    """다음 화면의 영상을 뒤에서 미리 받아 둔다 (다음 묶음으로 넘어갈 때 기다리지 않게)."""
+    todo = [(ev, role) for ev in events for role in site.cameras if (ev.id, role) not in _BG_FETCHING]
+    if not todo:
+        return
+    mc, cache = client(site), cache_root()
+    _BG_FETCHING.update((ev.id, role) for ev, role in todo)
+
+    def run():
+        for ev, role in todo:
+            try:
+                fetch_clip(mc, site, ev, role, cache)
+            except Exception:
+                _BG_FETCHING.discard((ev.id, role))          # 실패하면 다음 기회에 다시
+    threading.Thread(target=run, daemon=True).start()
+
+
+def video(site, ev: Event, role: str, label_role: bool = True, clip: tuple[Path | None, str] | None = None):
+    """clip: prefetch() 로 미리 준비한 (path, label). 없으면 여기서 받는다."""
     try:
-        path, label = playable_path(site, ev, role)
+        path, label = clip if clip is not None else playable_path(site, ev, role)
     except Exception:
         path, label = None, "영상을 불러오지 못했습니다"
     if label_role:

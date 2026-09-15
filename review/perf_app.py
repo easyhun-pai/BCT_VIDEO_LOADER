@@ -289,16 +289,18 @@ def _saved_marks(j: dict | None) -> list[str]:
 
 def review_grid(site, store: PerfStore, ids: list[str], start: int, f_state: str, rate: float):
     batch = ids[start:start + GRID_N]
+    # 버튼은 on_click 콜백 (스크립트 전에 처리 → 화면을 한 번만 그림). 영상 8개는 한꺼번에 받아 같이 띄운다.
     nav = st.columns([1, 6, 1])
     with nav[0]:
-        if st.button("◀ 이전 4개", disabled=start == 0, width="stretch"):
-            st.session_state.pf_idx = max(0, start - GRID_N); st.rerun()
+        st.button("◀ 이전 4개", disabled=start == 0, width="stretch", on_click=_pf_go, args=(max(0, start - GRID_N),))
     with nav[2]:
-        if st.button("다음 4개 ▶", disabled=start + GRID_N >= len(ids), width="stretch"):
-            st.session_state.pf_idx = min(start + GRID_N, len(ids) - 1); st.rerun()
+        st.button("다음 4개 ▶", disabled=start + GRID_N >= len(ids), width="stretch",
+                  on_click=_pf_go, args=(min(start + GRID_N, len(ids) - 1),))
+    with nav[1]:
+        with st.spinner("영상 불러오는 중…"):
+            clips = webui.prefetch(site, [event_of(store, eid) for eid in batch])
 
     grid = [st.columns(2), st.columns(2)]
-    cur: dict[str, list[str]] = {}
     for i, eid in enumerate(batch):
         r, j = store.rows[eid], store.judgment(eid)
         ev = event_of(store, eid)
@@ -325,32 +327,44 @@ def review_grid(site, store: PerfStore, ids: list[str], start: int, f_state: str
                 vc = st.columns(max(1, len(site.cameras)))
                 for c, role in zip(vc, site.cameras):
                     with c:
-                        webui.video(site, ev, role, label_role=False)
-                cur[eid] = webui.labeled_pills("틀린 항목", MARKS, lambda m: MARK_KO[m], key)
+                        webui.video(site, ev, role, label_role=False, clip=clips.get((eid, role)))
+                webui.labeled_pills("틀린 항목", MARKS, lambda m: MARK_KO[m], key)
     for i in range(len(batch), GRID_N):
         with grid[i // 2][i % 2]:
             st.empty()
 
+    # 미검수 필터면 저장한 묶음이 목록에서 빠지므로 제자리가 곧 다음 묶음
+    next_idx = start if f_state == "미검수" else min(start + GRID_N, max(0, len(ids) - 1))
     b = st.columns([1.3, 1, 4])
     with b[0]:
-        if st.button("저장 · P", key="btn_grid_tp", width="stretch"):
-            u = st.session_state.user
-            store.commit({eid: {"wrong": [m for m in cur.get(eid, []) if m != "excluded"], "excluded": "excluded" in cur.get(eid, [])}
-                          for eid in batch}, u["id"], u.get("ip", ""))
-            for eid in batch:
-                st.session_state.pop(f"pf_marks_{eid}", None)
-            if f_state != "미검수":                      # 미검수 필터면 저장한 묶음이 목록에서 빠지므로 제자리가 곧 다음 묶음
-                st.session_state.pf_idx = min(start + GRID_N, max(0, len(ids) - 1))
-            st.rerun()
+        st.button("저장 · P", key="btn_grid_tp", width="stretch", on_click=_pf_commit, args=(store, list(batch), next_idx))
     with b[1]:
-        if st.button("되돌리기 Z", key="btn_undo", width="stretch", disabled=not store.data["history"]):
-            undone = store.undo()
-            for eid in undone:
-                st.session_state.pop(f"pf_marks_{eid}", None)
-            if undone and undone[0] in ids:
-                st.session_state.pf_idx = ids.index(undone[0])
-            st.rerun()
+        st.button("되돌리기 Z", key="btn_undo", width="stretch", disabled=not store.data["history"],
+                  on_click=_pf_undo, args=(store, list(ids)))
     webui.inject_helpers(KEYMAP, rate)
+    webui.prefetch_background(site, [event_of(store, eid) for eid in ids[start + GRID_N:start + 2 * GRID_N]])
+
+
+def _pf_go(idx: int) -> None:
+    st.session_state.pf_idx = idx
+
+
+def _pf_commit(store: PerfStore, batch: list[str], next_idx: int) -> None:
+    u = st.session_state.user
+    marks = {eid: list(st.session_state.get(f"pf_marks_{eid}") or []) for eid in batch}
+    store.commit({eid: {"wrong": [m for m in ms if m != "excluded"], "excluded": "excluded" in ms} for eid, ms in marks.items()},
+                 u["id"], u.get("ip", ""))
+    for eid in batch:
+        st.session_state.pop(f"pf_marks_{eid}", None)
+    st.session_state.pf_idx = next_idx
+
+
+def _pf_undo(store: PerfStore, ids: list[str]) -> None:
+    undone = store.undo()
+    for eid in undone:
+        st.session_state.pop(f"pf_marks_{eid}", None)
+    if undone and undone[0] in ids:
+        st.session_state.pf_idx = ids.index(undone[0])
 
 
 def page_report(site, store: PerfStore, root: Path):
