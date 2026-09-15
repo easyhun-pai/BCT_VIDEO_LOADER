@@ -96,6 +96,8 @@ header[data-testid="stHeader"] { background:transparent; pointer-events:none; }
 [class*="st-key-tile_done_tp_"] { background:#F0FDF4; border-color:#BBF7D0; box-shadow:none; }
 [class*="st-key-tile_done_fp_"] { background:#FEF2F2; border-color:#FECACA; box-shadow:none; }
 [class*="st-key-tile_done_ex_"] { background:#F3F4F6; border-color:#E5E7EB; box-shadow:none; }
+/* 숫자키로 고른 타일: 다음 숫자(1~3)가 이 타일의 오탐 클래스로 들어간다 */
+[data-bct-active] { outline:3px solid #2563EB; outline-offset:2px; }
 .pm-tile-head { display:flex; align-items:center; gap:10px; font-size:13px; margin:0 0 4px; }
 .pm-tile-head .num { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:6px; background:#2563EB; color:#fff; font-weight:700; font-size:13px; }
 .pm-tile-head code { font-family:ui-monospace,Consolas,monospace; font-size:12px; background:#fff; padding:1px 6px; border-radius:3px; color:#1E3A8A; border:1px solid #E3E8EF; }
@@ -145,6 +147,17 @@ def pills(items: list[tuple[str, str, str]]) -> None:
     """[(라벨, 값, css클래스)] → 알약 한 줄."""
     html = "".join(f'<span class="pm-pill {cls}">{lab} <b>{val}</b></span>' for lab, val, cls in items)
     st.markdown(f'<div class="pm-pills">{html}</div>', unsafe_allow_html=True)
+
+
+def labeled_pills(label: str, options: list[str], format_func, key: str) -> list[str]:
+    """'오탐 내역  [1 안전모] [2 하네스] [3 안전고리]' — 칩 앞에 무엇을 고르는 칩인지 이름을 붙인 다중 선택."""
+    c1, c2 = st.columns([1, 6], vertical_alignment="center", gap="small")
+    with c1:
+        # 마크다운 블록 아래 여백만큼 글자가 칩보다 내려가 보여서 살짝 올린다
+        st.markdown(f'<div style="font-size:13px;font-weight:700;color:#374151;white-space:nowrap;position:relative;top:-7px">{label}</div>',
+                    unsafe_allow_html=True)
+    with c2:
+        return st.pills(label, options, selection_mode="multi", format_func=format_func, key=key, label_visibility="collapsed") or []
 
 
 def kpis(items: list[tuple[str, str, str, str]]) -> None:
@@ -262,12 +275,67 @@ def video(site, ev: Event, role: str, label_role: bool = True):
 #   · 리스너·감시자는 한 번만 설치하되, 같은 문서에서 이미 설치됐어도 페이지 교체 후엔 다시 설치된다
 #   · 브라우저가 자동재생을 막아 멈춘 <video> 는 다시 play() 시도 (동시 8개일 때 일부만 재생되는 경우)
 # 키맵 값: 버튼 라벨 앞부분(그 버튼 클릭) 또는 '☐ n'(라벨이 '☐ n'/'☑ n' 으로 시작하는 체크박스 토글)
+# 클래스 고르기(pick) — 숫자키가 키맵보다 먼저 여기로 온다:
+#   grid   : 대기 상태에서 n(1~tiles) = 타일 n 을 '활성'(파란 테두리)으로. 체크 안 된 타일이면 체크도 한다
+#            활성 상태에서 k(1~n) = 그 타일의 k번째 칩(오탐 클래스) 토글 후 대기로 복귀
+#            Backspace/Delete = 활성 타일 체크 해제 · Esc/Enter = 고르지 않고 복귀
+#   single : k(1~n) = 액션 패널의 k번째 칩 토글
+#   칩은 체크 직후 재실행이 끝나야 생기므로 잠깐 기다렸다가 누른다. 묶음(batch)이 바뀌면 활성은 풀린다.
 _HELPER_JS = """
 <script>
 (function(){
   const w = window;
   w.__bctRate   = __RATE__;
   w.__bctKeyMap = __KEYMAP__;
+  w.__bctPick   = __PICK__;
+  const batch = w.__bctPick ? w.__bctPick.batch : null;
+  if (batch !== w.__bctPickBatch) { w.__bctActive = null; w.__bctPickBatch = batch; }
+
+  const tileOf = (n) => [...document.querySelectorAll('[class*="st-key-tile_"]')]
+    .find(el => [...el.classList].some(c => c.startsWith('st-key-tile_') && c.endsWith('_' + (n - 1))));
+  const chkOf = (n) => {
+    const l = [...document.querySelectorAll('label')].find(l => { const m = (l.innerText || '').trim().match(/^[☐☑]\\s*(\\d)/); return m && m[1] === String(n); });
+    return l ? (l.querySelector('input[type=checkbox]') || l) : null;
+  };
+  const chips = (scope) => scope ? [...scope.querySelectorAll('[data-testid="stButtonGroup"] button')] : [];
+  const markActive = () => {
+    document.querySelectorAll('[data-bct-active]').forEach(el => el.removeAttribute('data-bct-active'));
+    if (w.__bctActive) { const t = tileOf(w.__bctActive); if (t) t.setAttribute('data-bct-active', '1'); }
+  };
+  const clickWhenReady = (get, i) => {
+    const t0 = Date.now();
+    const tick = () => { const b = get()[i]; if (b) b.click(); else if (Date.now() - t0 < 3000) setTimeout(tick, 80); };
+    tick();
+  };
+  w.__bctOnPick = (e) => {
+    const P = w.__bctPick; if (!P) return false;
+    if (e.key === 'Escape' || e.key === 'Enter' || e.key === 'Backspace' || e.key === 'Delete') {
+      if (!w.__bctActive) return false;
+      if (e.key === 'Backspace' || e.key === 'Delete') { const c = chkOf(w.__bctActive); if (c && c.checked) c.click(); }
+      w.__bctActive = null; markActive(); e.preventDefault(); return true;
+    }
+    if (!/^[1-9]$/.test(e.key)) { if ('pPnNzZ'.includes(e.key)) { w.__bctActive = null; markActive(); } return false; }
+    const d = Number(e.key);
+    if (P.mode === 'single') {
+      if (d > P.n) return false;
+      e.preventDefault(); clickWhenReady(() => chips(document.querySelector('[class*="st-key-action_panel"]')), d - 1); return true;
+    }
+    if (w.__bctActive) {
+      if (d > P.n) return true;
+      e.preventDefault();
+      const a = w.__bctActive; w.__bctActive = null; markActive();
+      clickWhenReady(() => chips(tileOf(a)), d - 1); return true;
+    }
+    if (d > P.tiles) return false;
+    const c = chkOf(d); if (!c) return true;
+    e.preventDefault();
+    if (!c.checked) c.click();                                    // 이미 체크된 타일(저장된 오탐 등)은 그대로 두고 항목만 고르게
+    w.__bctActive = d; markActive(); return true;
+  };
+  w.__bctMarkActive = () => {
+    if (w.__bctActive) { const c = chkOf(w.__bctActive); if (c && c.type === 'checkbox' && !c.checked) w.__bctActive = null; }
+    markActive();
+  };
 
   const apply = () => {
     const vids = document.querySelectorAll('video');
@@ -279,6 +347,7 @@ _HELPER_JS = """
         const pr = v.play(); if (pr && pr.catch) pr.catch(() => {});
       }
     });
+    if (w.__bctMarkActive) w.__bctMarkActive();          // 재렌더로 타일이 다시 그려져도 활성 테두리 유지
   };
   w.__bctApply = apply;
 
@@ -296,8 +365,11 @@ _HELPER_JS = """
 
     document.addEventListener('keydown', (e) => {
       const tag = (e.target && e.target.tagName) || '';
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target && e.target.isContentEditable)) return;
+      // 글자 입력칸에서만 무시 (마우스로 누른 체크박스에 포커스가 남아도 단축키는 동작)
+      const typing = (tag === 'INPUT' && !['checkbox', 'radio', 'button'].includes(e.target.type)) || tag === 'TEXTAREA' || tag === 'SELECT';
+      if (typing || (e.target && e.target.isContentEditable)) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (w.__bctOnPick && w.__bctOnPick(e)) return;
       const label = (w.__bctKeyMap || {})[e.key]; if (!label) return;
       let el = null;
       if (label.startsWith('☐ ')) {
@@ -325,9 +397,14 @@ def _inject_script(html: str) -> None:
         pass
 
 
-def inject_helpers(keymap: dict[str, str], rate: float) -> None:
-    """키보드 단축키 + 재생 속도 + 자동재생 복구 스크립트를 페이지에 심는다 (컴포넌트 iframe 없음)."""
-    _inject_script(_HELPER_JS.replace("__RATE__", str(float(rate))).replace("__KEYMAP__", json.dumps(keymap, ensure_ascii=False)))
+def inject_helpers(keymap: dict[str, str], rate: float, pick: dict | None = None) -> None:
+    """키보드 단축키 + 재생 속도 + 자동재생 복구 스크립트를 페이지에 심는다 (컴포넌트 iframe 없음).
+
+    pick: 숫자키로 오탐 클래스 칩 고르기. {"mode": "grid", "tiles": 4, "n": 3, "batch": "..."} 또는 {"mode": "single", "n": 3}
+    """
+    _inject_script(_HELPER_JS.replace("__RATE__", str(float(rate)))
+                   .replace("__KEYMAP__", json.dumps(keymap, ensure_ascii=False))
+                   .replace("__PICK__", json.dumps(pick, ensure_ascii=False)))
 
 
 # 표를 더블클릭하면 지정한 버튼(라벨 앞부분)을 대신 누른다.
@@ -450,8 +527,8 @@ def page_login():
                 st.error("ID 또는 비밀번호가 맞지 않습니다.")
 
 
-def sidebar_user(clear_keys: tuple[str, ...]):
-    """사이드바 맨 위 사용자·로그아웃. 로그아웃하면 user 와 clear_keys 를 지운다."""
+def sidebar_user(clear_keys: tuple[str, ...], sync_all: bool = False):
+    """사이드바 맨 위 사용자·로그아웃. 로그아웃하면 user 와 clear_keys 를 지운다. sync_all 이면 전량 업데이트 버튼도."""
     u = st.session_state.get("user")
     if not u:
         return
@@ -465,4 +542,87 @@ def sidebar_user(clear_keys: tuple[str, ...]):
                 for k in ("user",) + tuple(clear_keys):
                     st.session_state.pop(k, None)
                 st.rerun()
+        if sync_all:
+            if st.button("☁️ 검수 자료 전량 업데이트", key="btn_sync_all", width="stretch"):
+                run_sync_all()
+            msg = st.session_state.get("sync_all_msg")
+            if msg:
+                (st.success if msg["ok"] else st.error)(msg["text"])
+                if msg.get("detail"):
+                    with st.expander("자세히"):
+                        st.code(msg["detail"])
         st.divider()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# NAS 반영 (오탐 영상) · 모델 정보
+# ══════════════════════════════════════════════════════════════════════════
+def reload_session() -> None:
+    """앱이 들고 있는 오탐 검수 세션을 디스크에서 다시 읽는다 (NAS 반영이 session.json 의 exported 를 고친 뒤)."""
+    from review.session import Session
+    s = st.session_state.get("sess")
+    if isinstance(s, Session) and s.path.exists():
+        st.session_state.sess = Session(s.path, json.loads(s.path.read_text(encoding="utf-8")))
+
+
+def run_sync_all() -> None:
+    """모든 현장·일자의 검수 기록 중 NAS 에 반영 안 된 오탐 영상을 한 번에 받고, 필요 없어진 영상은 정리한다."""
+    from review import export
+
+    st_ = settings()
+    root, src = out_root()
+    with st.spinner("검수 자료를 확인하는 중…"):
+        plans = export.plan_all(root, st_.sites.values())
+    if not plans:
+        st.session_state.sync_all_msg = {"ok": True, "text": "모든 검수 자료가 반영돼 있습니다."}
+        return
+    bar = st.progress(0.0, text="반영 중…")
+    total = sum(max(1, p.n_events) for p in plans)
+    done, got, moved, removed, missing, errors = 0, 0, 0, 0, [], []
+    for p in plans:
+        site = st_.site(p.site)
+        base = done
+        try:
+            c = client(site) if p.download else None
+            res = export.apply_plan(p, c, site.minio_bucket, site.cameras,
+                                    progress=lambda i, n, eid: bar.progress(min(1.0, (base + i) / total), text=f"{p.date} · {eid}"))
+            got += res.downloaded; moved += res.moved; removed += res.removed; missing += res.missing
+        except (Exception, SystemExit) as e:           # 현장 하나가 안 닿아도 나머지는 진행
+            errors.append(f"{p.site} {p.date}: {type(e).__name__}: {e}")
+        done = base + max(1, p.n_events)
+        bar.progress(min(1.0, done / total))
+    bar.empty()
+    reload_session()
+    days = len({(p.site, p.date) for p in plans})
+    text = f"{days}일치 반영 · 받음 {got} · 옮김 {moved} · 정리 {removed}" + (f" · 원본 없음 {len(missing)}" if missing else "")
+    detail = "\n".join(errors + [f"원본 없음: {m}" for m in missing])
+    if errors:
+        text = f"일부를 반영하지 못했습니다 ({len(errors)}일). " + text
+    st.session_state.sync_all_msg = {"ok": not errors, "text": text, "detail": detail}
+
+
+_MODEL_REFRESH: dict[str, float] = {}               # 현장별 마지막 갱신 시도 시각 (서버 프로세스 전체 공유)
+
+
+def model_label(site) -> str:
+    """현장 탐지 모델 이름 ('PPE 260827ppe2 · Hook 260828hook'). 저장된 정보가 6시간보다 오래되면 뒤에서 갱신."""
+    import threading
+    import time
+    from review import models
+
+    root, _ = out_root()
+    info = models.load(root, site.code)
+    try:
+        age = (datetime.now() - datetime.fromisoformat(info["checked_at"])).total_seconds() if info else None
+    except (KeyError, ValueError):
+        age = None
+    if (age is None or age > 6 * 3600) and time.time() - _MODEL_REFRESH.get(site.code, 0) > 1800:
+        _MODEL_REFRESH[site.code] = time.time()
+
+        def _bg(st_=settings(), site_=site, root_=root):
+            try:
+                models.refresh(st_, site_, root_)
+            except Exception:                           # SSH 키가 없는 PC 등 — 저장된 정보만 쓴다
+                pass
+        threading.Thread(target=_bg, daemon=True).start()
+    return models.label(info)

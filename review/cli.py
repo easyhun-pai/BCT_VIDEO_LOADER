@@ -8,6 +8,8 @@
   fetch SITE (--ids-file F | --ids a,b | DATE --bct.. --verdict..)  클립 다운로드
   user add|list|del [ID]         웹 로그인 계정 (users.local.json, PBKDF2 해시)
   report SITE FROM TO [--gap 300] 기간 출입 통계 리포트 (시도 세션 · BCT/일별/시간대 · 사유 · PDF)
+  models SITE                    엣지노드 탐지 모델 정보 갱신 (SSH, 웹 헤더에 표시)
+  sync [SITE] [--dry-run]        오탐 영상 NAS 반영 (오탐 항목: 안전고리→hook, 안전모·하네스→ppe)
 """
 from __future__ import annotations
 
@@ -330,6 +332,53 @@ def cmd_report(a, st):
     return 0
 
 
+def cmd_models(a, st):
+    """엣지노드의 탐지 모델 정보를 읽어 {저장루트}/_config/models/{SITE}.json 갱신."""
+    from . import models
+    site = st.site(a.site)
+    root, src = st.resolve_out_root(a.out)
+    info = models.refresh(st, site, root)
+    rows = []
+    for md5, m in info["models"].items():
+        nodes = [n for n, r in info["nodes"].items() if md5 in r.values()]
+        rows.append([m.get("role"), m.get("name"), m.get("base", "").split("/")[-1], (m.get("trained") or "")[:10], m.get("file"), md5[:8], ",".join(nodes)])
+    print(tabulate(rows, headers=["role", "name", "base", "trained", "file", "md5", "nodes"]))
+    for k, v in (info.get("errors") or {}).items():
+        print(f"  실패 {k}: {v}")
+    print(f"\n→ {models.models_path(root, site.code)}  ({src})")
+    return 0
+
+
+def cmd_sync(a, st):
+    """검수 기록(session.json)의 오탐·오탐 항목에 맞춰 NAS 영상을 받거나 정리한다 (웹의 '검수 자료 전량 업데이트')."""
+    from . import export
+    root, src = st.resolve_out_root(a.out)
+    sites = [st.site(a.site)] if a.site else list(st.sites.values())
+    plans = export.plan_all(root, sites)
+    print(f"[sync] 저장 루트 {root} ({src})")
+    if not plans:
+        print("반영할 것 없음"); return 0
+    for p in plans:
+        print(f"{p.site} {p.date}: 받을 영상 {sum(len(v) for v in p.download.values())} · 옮길 영상 {sum(len(v) for v in p.move.values())}"
+              f" · 지울 영상 {sum(len(v) for v in p.remove.values())}")
+        if a.verbose:
+            for eid, roles in p.download.items():
+                print(f"   + {eid} {','.join(roles)}")
+            for eid, roles in p.move.items():
+                print(f"   > {eid} {','.join(roles)}")
+            for eid, roles in p.remove.items():
+                print(f"   - {eid} {','.join(roles)}")
+    if a.dry_run:
+        return 0
+    for p in plans:
+        site = st.site(p.site)
+        with SiteAccess(site) as acc:
+            c = _client(site, acc) if p.download else None
+            r = export.apply_plan(p, c, site.minio_bucket, site.cameras)
+        print(f"{p.site} {p.date}: 받음 {r.downloaded} · 옮김 {r.moved} · 정리 {r.removed}" + (f" · 원본 없음 {', '.join(r.missing)}" if r.missing else ""))
+    return 0
+
+
 # ── argparse ─────────────────────────────────────────────────────────────
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m review", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -366,6 +415,15 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--gap", type=int, default=300, help="재시도로 묶는 최대 간격(초). 기본 300 (거부 뒤 5분 안에 다시 오면 같은 시도)")
     q.add_argument("--out", help="출력 폴더 (기본 data/_reports/{site}_{from}_{to})")
     q.set_defaults(fn=cmd_report)
+
+    q = sp.add_parser("models", help="엣지노드 탐지 모델 정보 갱신 (SSH)")
+    q.add_argument("site"); q.add_argument("--out", help="저장 루트 (기본: NAS → 로컬 폴백)")
+    q.set_defaults(fn=cmd_models)
+
+    q = sp.add_parser("sync", help="오탐 영상 NAS 반영 — 오탐 항목에 맞는 카메라만 받고 나머지는 정리")
+    q.add_argument("site", nargs="?", help="생략하면 모든 현장"); q.add_argument("--out", help="저장 루트 (기본: NAS → 로컬 폴백)")
+    q.add_argument("--dry-run", action="store_true"); q.add_argument("-v", "--verbose", action="store_true")
+    q.set_defaults(fn=cmd_sync)
 
     q = sp.add_parser("user", help="웹 로그인 계정 관리 (add|list|del)")
     q.add_argument("action", choices=["add", "list", "del"]); q.add_argument("id", nargs="?")

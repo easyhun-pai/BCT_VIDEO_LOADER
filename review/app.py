@@ -2,7 +2,7 @@
 
 실행:  scripts\\review_app.bat   (또는  python -m streamlit run review/app.py)
 흐름:  현장 선택 → 일자 선택 → 하루치 목록·필터 → 검수(정탐/오탐, 1개씩 또는 2×2 그리드) → 오탐 내보내기
-저장:  {저장루트}/{site}/{date}/session.json  (판정), {event_id}/{hook,ppe}.mp4 (오탐 학습용 클립)
+저장:  {저장루트}/{site}/{date}/session.json  (판정), {hook|ppe}/{ts}_{bct}_{role}.mp4 (오탐 학습용 클립, review/export.py)
 공통 화면 부품(로그인·CSS·영상·단축키)은 review/webui.py — 성능 검수 앱(perf_app.py)과 같이 쓴다.
 """
 from __future__ import annotations
@@ -17,13 +17,12 @@ if str(ROOT) not in sys.path:
 
 import streamlit as st  # noqa: E402
 
-from review import webui  # noqa: E402
+from review import export, webui  # noqa: E402
 from review.catalog import Event, list_events  # noqa: E402
-from review.download import fetch_events  # noqa: E402
 from review.influx import join_events, query_day, reasons_from  # noqa: E402
-from review.session import VERDICTS, Session  # noqa: E402
+from review.session import FP_CLASSES, VERDICTS, Session  # noqa: E402
 from review.webui import (CLASSES, VERDICT_KO, VERDICT_SHORT, access, cached_days, class_marks, client,  # noqa: E402
-                          header, inject_css, out_root, page_login, pills, settings)
+                          header, inject_css, labeled_pills, out_root, page_login, pills, settings)
 
 APP_NAME = "오탐 검수 플랫폼"
 webui.setup(APP_NAME, "🔎")
@@ -65,7 +64,7 @@ def build_rows(site, events, matched, sess: Session) -> list[dict]:
             "hook": (r or {}).get("hook_score"), "helmet": (r or {}).get("helmet_score"), "harness": (r or {}).get("harness_score"),
             "reasons": reasons_from(r, site.thresholds),
             "tg": bool(ev.tg), "train": bool(ev.train),
-            "my": (v or {}).get("verdict", ""), "memo": (v or {}).get("memo", ""),
+            "my": (v or {}).get("verdict", ""), "memo": (v or {}).get("memo", ""), "fp_classes": (v or {}).get("classes", []),
         })
     return rows
 
@@ -98,25 +97,39 @@ def apply_filters(rows: list[dict], f: dict) -> list[dict]:
             continue
         if s == "오탐만" and r["my"] != "fp":
             continue
+        if s == "항목 미분류" and not (r["my"] == "fp" and not r["fp_classes"]):
+            continue
         out.append(r)
     return out
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # 키보드
-#   1개씩: ← 정탐, → 오탐, Space 건너뛰기, Z 되돌리기
-#   그리드: P 전부 정탐, N 체크된 것 오탐(나머지 정탐), 1~4 체크 토글, Z 되돌리기
+#   1개씩: ← 정탐, → 오탐, Space 건너뛰기, Z 되돌리기, 1~3 오탐 클래스 토글
+#   그리드: 1~4 타일 체크 → 이어서 1~3 그 타일의 오탐 클래스 (Esc 는 고르지 않고 빠짐)
+#           P 전부 정탐, N 체크된 것 오탐(나머지 정탐), Z 되돌리기
 # ══════════════════════════════════════════════════════════════════════════
 KEYMAP_SINGLE = {"ArrowLeft": "정탐", "ArrowRight": "오탐", " ": "건너뛰기", "z": "되돌리기", "Z": "되돌리기"}
-KEYMAP_GRID = {"p": "전부 정탐", "P": "전부 정탐", "n": "체크 오탐", "N": "체크 오탐", "z": "되돌리기", "Z": "되돌리기",
-               "1": "☐ 1", "2": "☐ 2", "3": "☐ 3", "4": "☐ 4"}
+KEYMAP_GRID = {"p": "전부 정탐", "P": "전부 정탐", "n": "체크 오탐", "N": "체크 오탐", "z": "되돌리기", "Z": "되돌리기"}
+FP_CLASS_KO = {key: label for label, key in CLASSES}
+FP_CLASS_OPTS = list(FP_CLASSES)                 # 칩 순서 = 숫자키 순서 (1 안전모 · 2 하네스 · 3 안전고리)
 
-def inject_helpers(grid: bool, rate: float) -> None:
-    webui.inject_helpers(KEYMAP_GRID if grid else KEYMAP_SINGLE, rate)
+
+def fp_class_label(k: str) -> str:
+    return f"{FP_CLASS_OPTS.index(k) + 1} {FP_CLASS_KO[k]}"
+
+
+def fp_class_text(classes: list[str]) -> str:
+    return " · ".join(FP_CLASS_KO[k] for k in FP_CLASS_OPTS if k in (classes or []))
+
+
+def inject_helpers(grid: bool, rate: float, batch: str = "") -> None:
+    pick = {"mode": "grid", "tiles": GRID_N, "n": len(FP_CLASS_OPTS), "batch": batch} if grid else {"mode": "single", "n": len(FP_CLASS_OPTS)}
+    webui.inject_helpers(KEYMAP_GRID if grid else KEYMAP_SINGLE, rate, pick)
 
 
 def sidebar_user():
-    webui.sidebar_user(("site_code", "date", "loaded", "events", "matched", "stats", "sess", "idx"))
+    webui.sidebar_user(("site_code", "date", "loaded", "events", "matched", "stats", "sess", "idx"), sync_all=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -201,6 +214,7 @@ def page_days(site):
         total = sum(days[d].values())
         p = day_progress(root, site.code, d, total)
         table.append({"일자": d, "상태": p["label"], "검수": f"{p['done']}/{total}", "정탐": p["tp"], "오탐": p["fp"],
+                      "항목 미분류": p["unclassified"],
                       "이벤트": total, **{b: days[d].get(b, 0) for b in site.bcts}})
     st.dataframe(table, width="stretch", hide_index=True, key=tbl_key,
                  on_select="rerun", selection_mode=["single-row", "single-cell"])
@@ -215,16 +229,18 @@ def day_progress(root: Path, site_code: str, date: str, total: int) -> dict:
 
     일자 화면을 열 때마다 새로 읽으므로 다른 검수자가 진행한 것도 바로 반영된다.
     """
-    tp = fp = done = 0
+    tp = fp = done = uncls = 0
     try:
         data = __import__("json").loads((root / site_code / date / "session.json").read_text(encoding="utf-8"))
-        vs = [v.get("verdict") for v in (data.get("verdicts") or {}).values()]
+        vals = list((data.get("verdicts") or {}).values())
+        vs = [v.get("verdict") for v in vals]
         tp, fp, done = vs.count("tp"), vs.count("fp"), len(vs)
+        uncls = sum(1 for v in vals if v.get("verdict") == "fp" and not v.get("classes"))
     except Exception:                         # 파일 없음·NAS 끊김·깨진 파일 → 미검수로 표시
         pass
     state = "none" if done == 0 else "done" if total and done >= total else "doing"
     label, cls = DAY_STATUS[state]
-    return {"state": state, "label": label, "cls": cls, "done": done, "tp": tp, "fp": fp}
+    return {"state": state, "label": label, "cls": cls, "done": done, "tp": tp, "fp": fp, "unclassified": uncls}
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -280,11 +296,12 @@ def page_review(site, date: str):
         # ── 세션 정보 · 내보내기 (필터보다 위) ──
         st.markdown("**세션 정보**")
         cnt = sess.counts()
-        st.caption(f"정탐 {cnt['tp']} · 오탐 {cnt['fp']} · 내보냄 {cnt['exported']}")
-        pend = sess.unexported_ids()
-        n_pend = sum(len(v) for v in pend.values())
-        if st.button(f"📦 영상 내보내기 (오탐 {n_pend})", disabled=not n_pend, width="stretch", type="primary"):
-            export_clips(site, events, sess, root, pend)
+        n_uncls = len(sess.unclassified_fp_ids())
+        st.caption(f"정탐 {cnt['tp']} · 오탐 {cnt['fp']}" + (f" · 항목 미분류 {n_uncls}" if n_uncls else "") + f" · 내보냄 {cnt['exported']}")
+        plan = export.plan_day(root, site.code, date, site.cameras)
+        n_pend = plan.n_events if plan else 0
+        if st.button(f"📦 영상 내보내기 ({n_pend})", disabled=not (plan and not plan.empty), width="stretch", type="primary"):
+            export_day(site, plan)
             if not st.session_state.get("export_err"):
                 st.rerun()
         if st.session_state.get("export_err"):
@@ -303,7 +320,7 @@ def page_review(site, date: str):
             "bcts": st.multiselect("BCT", all_bcts),
             "hook": st.slider("Hook 점수", 0.0, 1.0, (0.0, 1.0), 0.05),
             "missing": st.multiselect("클래스 미검출 (점수 0)", ["hook", "helmet", "harness"]),
-            "status": st.radio("상태", ["전체", "미검수", "검수됨", "오탐만"], horizontal=True),
+            "status": st.radio("상태", ["전체", "미검수", "검수됨", "오탐만", "항목 미분류"], horizontal=True),
         }
 
     flist = apply_filters(rows_all, f)
@@ -317,6 +334,9 @@ def page_review(site, date: str):
     items = [("전체", f"{len(events)}", ""), ("필터", f"{len(flist)}", ""), ("검수", f"{n_done}/{len(flist)}", ""),
              ("정탐", f"{c['tp']}", "ok"), ("오탐", f"{c['fp']}", "fp"),
              ("판정 연동", inf_val, "warn" if st.session_state.get("influx_err") else ""), ("저장", "NAS" if src == "NAS" else "이 PC", "" if src == "NAS" else "warn")]
+    model = webui.model_label(site)
+    if model:
+        items.append(("모델", model, ""))
     pills(items)
     if st.session_state.get("influx_err"):
         st.warning("판정 정보를 불러오지 못해 영상만 표시합니다. 새로고침으로 다시 시도할 수 있습니다.")
@@ -325,6 +345,12 @@ def page_review(site, date: str):
 
     if not flist:
         st.info("필터 조건에 맞는 이벤트가 없습니다."); return
+
+    # ── 필터를 바꾸면 목록이 달라지므로 맨 앞(미검수 필터면 첫 미검수)부터 ──
+    f_sig = repr(sess.data["filters_last"])
+    if st.session_state.get("filters_sig") not in (None, f_sig) and st.session_state.get("idx_init") == (site.code, date):
+        st.session_state.idx = 0
+    st.session_state.filters_sig = f_sig
 
     # ── 이어하기: 세션을 처음 열면 마지막으로 판정한 이벤트 바로 다음부터 ──
     if st.session_state.get("idx_init") != (site.code, date):
@@ -343,7 +369,8 @@ def page_review(site, date: str):
     st.session_state.idx = idx
 
     if grid:
-        review_grid(site, flist, idx, sess, reviewer, rate)
+        # 판정하면 목록에서 빠지는 필터에선 저장 후 제자리가 곧 다음 묶음
+        review_grid(site, flist, idx, sess, reviewer, rate, shrinking=f["status"] in ("미검수", "항목 미분류"))
     else:
         review_single(site, flist, idx, sess, reviewer, rate)
 
@@ -353,7 +380,8 @@ def page_review(site, date: str):
             [{"#": i + 1, "시각": x["time"], "BCT": x["bct"].upper(), "판정": VERDICT_SHORT.get(x["verdict"], "-"),
               **{lab: ("⭕" if x[key] is not None and x[key] >= site.thresholds.get(f"{key}_score", 0.5) else "❌" if x[key] is not None else "–")
                  for lab, key in CLASSES},
-              "내 판정": VERDICTS.get(x["my"], ""), "메모": x["memo"], "id": x["id"]} for i, x in enumerate(flist)],
+              "내 판정": VERDICTS.get(x["my"], ""), "오탐 항목": fp_class_text(x["fp_classes"]) if x["my"] == "fp" else "",
+              "메모": x["memo"], "id": x["id"]} for i, x in enumerate(flist)],
             width="stretch", hide_index=True, height=360)
 
 
@@ -382,6 +410,8 @@ def review_single(site, flist: list[dict], idx: int, sess: Session, reviewer: st
             st.session_state.idx = idx + 1; st.rerun()
 
     mine = VERDICTS.get(r["my"], "")
+    if r["my"] == "fp" and r["fp_classes"]:
+        mine += " · " + fp_class_text(r["fp_classes"])
     vcls = {"tp": "v-tp", "fp": "v-fp"}.get(r["my"], "muted")
     # 판정한 이벤트는 패널 색으로 바로 보이게 (미검수 하늘색 · 미검수 거부 파스텔 노랑 · 정탐 연두 · 오탐 연빨강)
     if r["my"] in ("tp", "fp"):
@@ -406,6 +436,12 @@ def review_single(site, flist: list[dict], idx: int, sess: Session, reviewer: st
                 with st.spinner(f"{role} 영상 준비…"):
                     webui.video(site, ev, role)
 
+        # ── 오탐 클래스 칩 (오탐 → 을 누를 때 함께 기록) ──
+        cls_key = f"cls1_{ev.id}"
+        if cls_key not in st.session_state:
+            st.session_state[cls_key] = list(r["fp_classes"])
+        cls_now = labeled_pills("오탐 내역", FP_CLASS_OPTS, fp_class_label, cls_key)
+
         # ── 판정 버튼 ──
         b = st.columns([1, 1, 1, 1, 3])
         memo_key = f"memo_{ev.id}"
@@ -413,7 +449,7 @@ def review_single(site, flist: list[dict], idx: int, sess: Session, reviewer: st
             memo = st.text_input("메모", value=r["memo"], key=memo_key, placeholder="한 줄 메모 (선택)")
         def _set(v):
             u = st.session_state.user
-            sess.set(ev.id, v, reviewer, st.session_state.get(memo_key, ""), ip=u.get("ip", ""))
+            sess.set(ev.id, v, reviewer, st.session_state.get(memo_key, ""), ip=u.get("ip", ""), classes=cls_now)
             st.session_state.idx = min(idx + 1, len(flist) - 1) if idx < len(flist) - 1 else idx
             st.rerun()
         with b[0]:
@@ -432,39 +468,47 @@ def review_single(site, flist: list[dict], idx: int, sess: Session, reviewer: st
                 st.rerun()
         if r["my"] and memo != r["memo"]:
             sess.set_memo(ev.id, memo)
+        if r["my"] == "fp" and sorted(cls_now) != sorted(r["fp_classes"]):
+            sess.set_classes(ev.id, cls_now)
     inject_helpers(grid=False, rate=rate)
 
 
 # ── 4개씩 모드 (2×2) ──────────────────────────────────────────────────────
-def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str, rate: float):
-    """한 화면에 이벤트 4개. 1~4 체크 = 오탐 후보. P = 전부 정탐, N = 체크 오탐·나머지 정탐. 되돌리기는 묶음 단위."""
+def suggested_classes(site, r: dict) -> list[str]:
+    """항목 분류 전 오탐의 제안값: 그 이벤트에서 임계값에 못 미친(❌) 클래스. 거부된 오탐은 대개 이것이 오탐 항목이다."""
+    return [k for k in FP_CLASS_OPTS if r.get(k) is not None and r[k] < site.thresholds.get(f"{k}_score", 0.5)]
+
+
+def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str, rate: float, shrinking: bool = False):
+    """한 화면에 이벤트 4개. 1~4 체크 = 오탐 후보. P = 전부 정탐, N = 체크 오탐·나머지 정탐. 되돌리기는 묶음 단위.
+
+    이미 오탐으로 판정한 타일은 체크된 채로 열리고 칩에 저장된 항목(없으면 ❌ 클래스 제안)이 들어가 있다 → N 으로 항목 저장.
+    """
     # 묶음의 시작은 4의 배수가 아니어도 되지만, 페이지 이동은 4칸씩
     start = idx
     batch = flist[start:start + GRID_N]
-    n_pages = (len(flist) + GRID_N - 1) // GRID_N
-    page_no = start // GRID_N + 1
 
     nav = st.columns([1, 6, 1])
     with nav[0]:
         if st.button("◀ 이전 4개", disabled=start == 0, width="stretch"):
             st.session_state.idx = max(0, start - GRID_N); st.rerun()
-    with nav[1]:
-        st.markdown(f"<div style='text-align:center;color:#6B7280;padding-top:6px'>"
-                    f"{start + 1}–{start + len(batch)} / {len(flist)} &nbsp;·&nbsp; 묶음 {page_no} / {n_pages}"
-                    f" &nbsp;·&nbsp; <b>1~4</b> 체크 · <b>P</b> 전부 정탐 · <b>N</b> 체크 오탐 · <b>Z</b> 되돌리기</div>", unsafe_allow_html=True)
     with nav[2]:
         if st.button("다음 4개 ▶", disabled=start + GRID_N >= len(flist), width="stretch"):
             st.session_state.idx = min(start + GRID_N, len(flist) - 1); st.rerun()
 
-    # 체크 상태는 묶음이 바뀌면 초기화
+    # 체크 상태는 묶음이 바뀌면 판정 기록으로 다시 채운다 (오탐이면 체크 + 항목)
     batch_key = tuple(x["id"] for x in batch)
     if st.session_state.get("grid_batch") != batch_key:
         st.session_state.grid_batch = batch_key
         for i in range(GRID_N):
-            st.session_state[f"chk_{i}"] = False
+            r = batch[i] if i < len(batch) else None
+            is_fp = bool(r and r["my"] == "fp")
+            st.session_state[f"chk_{i}"] = is_fp
+            st.session_state[f"cls_{i}"] = (list(r["fp_classes"]) or suggested_classes(site, r)) if is_fp else []
 
     rows2 = [st.columns(2), st.columns(2)]
     chk_now: dict[int, bool] = {}                 # 이번 렌더의 체크 값 (위젯 반환값 — session_state 보다 한 박자 빠름)
+    cls_now: dict[int, list[str]] = {}            # 체크한 타일의 오탐 클래스
     for i, r in enumerate(batch):
         ev: Event = r["ev"]
         col = rows2[i // 2][i % 2]
@@ -481,6 +525,8 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
             with st.container(key=tile_key):
                 verdict_txt, marks = _event_line(site, r)
                 mine = VERDICTS.get(r["my"], "")
+                if r["my"] == "fp" and r["fp_classes"]:
+                    mine += " · " + fp_class_text(r["fp_classes"])
                 vcls = {"tp": "v-tp", "fp": "v-fp"}.get(r["my"], "muted")
                 st.markdown(
                     f'<div class="pm-tile-head"><span class="num">{i + 1}</span><code>{ev.id}</code>'
@@ -494,6 +540,8 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
                     with c:
                         webui.video(site, ev, role, label_role=False)
                 chk_now[i] = st.checkbox(f"{'☑' if checked else '☐'} {i + 1} · 오탐으로 표시", key=f"chk_{i}")
+                if chk_now[i]:
+                    cls_now[i] = labeled_pills("오탐 내역", FP_CLASS_OPTS, fp_class_label, f"cls_{i}")
 
     # 빈 칸 채우기 (마지막 묶음이 4개 미만일 때)
     for i in range(len(batch), GRID_N):
@@ -503,11 +551,13 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
     # ── 판정 버튼 ──
     def _commit(mark_fp: bool):
         u = st.session_state.user
-        verdicts = {}
+        verdicts, classes = {}, {}
         for i, r in enumerate(batch):
             verdicts[r["id"]] = "fp" if (mark_fp and chk_now.get(i, False)) else "tp"
-        sess.set_many(verdicts, reviewer, ip=u.get("ip", ""))
-        st.session_state.idx = min(start + GRID_N, len(flist) - 1) if start + GRID_N < len(flist) else start
+            classes[r["id"]] = cls_now.get(i, [])
+        sess.set_many(verdicts, reviewer, ip=u.get("ip", ""), classes=classes)
+        if not shrinking:
+            st.session_state.idx = min(start + GRID_N, len(flist) - 1) if start + GRID_N < len(flist) else start
         st.session_state.grid_batch = None
         st.rerun()
 
@@ -525,29 +575,24 @@ def review_grid(site, flist: list[dict], idx: int, sess: Session, reviewer: str,
                 st.session_state.idx = pos
             st.session_state.grid_batch = None
             st.rerun()
-    inject_helpers(grid=True, rate=rate)
+    inject_helpers(grid=True, rate=rate, batch="|".join(batch_key))
 
 
-def export_clips(site, events: list[Event], sess: Session, root: Path, pend: dict[str, list[str]]) -> None:
-    """오탐 이벤트의 원본 영상을 {site}/{date}/{event_id}/ 로 받는다. 정탐은 기록만."""
-    idx = {e.id: e for e in events}
-    targets = [idx[i] for ids in pend.values() for i in ids if i in idx]
-    if not targets:
-        st.warning("내보낼 이벤트가 없습니다. 새로고침 후 다시 시도해 주세요."); return
-    c = client(site)
-    bar = st.progress(0.0, text="영상 다운로드 중…")
-    def prog(i, n, res):
-        bar.progress(i / n, text=f"{i}/{n} · {res.event_id}")
-        sess.mark_exported(res.event_id, res.downloaded + res.skipped)
+def export_day(site, plan: "export.DayPlan") -> None:
+    """이 날짜의 오탐 영상을 판정·오탐 항목에 맞춰 NAS 에 반영 (필요한 카메라만 받고, 필요 없는 영상은 지움)."""
+    bar = st.progress(0.0, text="영상 반영 중…")
     try:
-        fetch_events(c, site.minio_bucket, targets, root, site.cameras, include_tg=False, progress=prog)
+        c = client(site) if plan.download else None
+        res = export.apply_plan(plan, c, site.minio_bucket, site.cameras,
+                                progress=lambda i, n, eid: bar.progress(i / n, text=f"{i}/{n} · {eid}"))
     except Exception as e:
         bar.empty()
         # st.stop() 을 쓰면 본문까지 안 그려져 화면이 비므로, 실패해도 계속 그린다.
         st.session_state.export_err = f"{type(e).__name__}: {e}"
         return
     st.session_state.pop("export_err", None)
-    bar.progress(1.0, text=f"완료 · {len(targets)}건 저장됨")
+    webui.reload_session()
+    bar.progress(1.0, text=f"완료 · 받음 {res.downloaded} · 옮김 {res.moved} · 정리 {res.removed}")
 
 
 # ══════════════════════════════════════════════════════════════════════════

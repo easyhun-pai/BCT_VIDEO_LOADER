@@ -1,6 +1,7 @@
-"""이벤트 클립 다운로드 → {out}/{site}/{yyyy-mm-dd}/{event_id}/{role}.mp4
+"""이벤트 클립 다운로드 → {out}/{site}/{yyyy-mm-dd}/{role}/{yyyymmdd_HHMMSS}_{bct}_{role}.mp4
 
-기본은 학습용(박스 없음)만. --tg 를 주면 검수용(박스 있음)도 {role}_tg.mp4 로 같이 받는다.
+기본은 학습용(박스 없음)만. --tg 를 주면 검수용(박스 있음)도 ..._{role}_tg.mp4 로 같이 받는다.
+같은 날짜 안에서는 이벤트별 폴더를 만들지 않고 카메라(role) 폴더에 모은다 (2026-09-15, 오탐 영상 NAS 구조와 동일).
 이미 있는 파일은 건너뛴다(재실행 안전).
 """
 from __future__ import annotations
@@ -53,17 +54,17 @@ def _download(client: Minio, bucket: str, key: str, dst: Path, chunk: int = 1 <<
 
 def fetch_events(client: Minio, bucket: str, events: list[Event], out_root: Path,
                  roles: list[str], include_tg: bool = False, progress=None, subdir: str = "") -> list[FetchResult]:
-    """subdir 를 주면 {out}/{site}/{date}/{subdir}/{event_id}/ 로 받는다 (예: 판정별 fp/, unsure/)."""
+    """subdir 를 주면 {out}/{site}/{date}/{subdir}/{role}/ 로 받는다 (예: 판정별 fp/, unsure/)."""
     results: list[FetchResult] = []
     for i, ev in enumerate(events, 1):
-        d = out_root / ev.site / ev.date / subdir / ev.id if subdir else out_root / ev.site / ev.date / ev.id
-        d.mkdir(parents=True, exist_ok=True)
+        d = out_root / ev.site / ev.date / subdir if subdir else out_root / ev.site / ev.date
         r = FetchResult(event_id=ev.id, dir=d)
         wants: list[tuple[str, str | None, Path]] = []
         for role in roles:
-            wants.append((f"{role}.mp4", ev.key_for(role), d / f"{role}.mp4"))
+            stem = f"{ev.ts}_{ev.bct}_{role}"
+            wants.append((f"{role}.mp4", ev.key_for(role), d / role / f"{stem}.mp4"))
             if include_tg:
-                wants.append((f"{role}_tg.mp4", ev.key_for(role, tg=True), d / f"{role}_tg.mp4"))
+                wants.append((f"{role}_tg.mp4", ev.key_for(role, tg=True), d / role / f"{stem}_tg.mp4"))
         for label, key, dst in wants:
             if key is None:
                 r.missing.append(label)
@@ -71,6 +72,7 @@ def fetch_events(client: Minio, bucket: str, events: list[Event], out_root: Path
             if dst.exists() and dst.stat().st_size > 0:
                 r.skipped.append(label)
                 continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
             _download(client, bucket, key, dst)
             r.downloaded.append(label)
         results.append(r)

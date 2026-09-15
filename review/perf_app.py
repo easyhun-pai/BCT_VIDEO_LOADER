@@ -134,7 +134,7 @@ def page_months(site):
             with a:
                 n = st.number_input("BCT 당 표본", min_value=10, max_value=1000, value=DEFAULT_PER_BCT, step=10)
             with b:
-                model = st.text_input("모델 버전", placeholder="예: hook-v3 (2026-09 재학습)")
+                model = st.text_input("모델 버전", value=webui.model_label(site), placeholder="예: hook-v3 (2026-09 재학습)")
             with c:
                 st.write(""); st.write("")
                 make = st.button("표본 만들기", type="primary", width="stretch", disabled=not ev_by_month.get(pick))
@@ -289,15 +289,10 @@ def _saved_marks(j: dict | None) -> list[str]:
 
 def review_grid(site, store: PerfStore, ids: list[str], start: int, f_state: str, rate: float):
     batch = ids[start:start + GRID_N]
-    n_pages = (len(ids) + GRID_N - 1) // GRID_N
     nav = st.columns([1, 6, 1])
     with nav[0]:
         if st.button("◀ 이전 4개", disabled=start == 0, width="stretch"):
             st.session_state.pf_idx = max(0, start - GRID_N); st.rerun()
-    with nav[1]:
-        st.markdown(f"<div style='text-align:center;color:#6B7280;padding-top:6px'>"
-                    f"{start + 1}–{start + len(batch)} / {len(ids)} &nbsp;·&nbsp; 묶음 {start // GRID_N + 1} / {n_pages}"
-                    f" &nbsp;·&nbsp; <b>P</b> 저장 · <b>Z</b> 되돌리기</div>", unsafe_allow_html=True)
     with nav[2]:
         if st.button("다음 4개 ▶", disabled=start + GRID_N >= len(ids), width="stretch"):
             st.session_state.pf_idx = min(start + GRID_N, len(ids) - 1); st.rerun()
@@ -331,8 +326,7 @@ def review_grid(site, store: PerfStore, ids: list[str], start: int, f_state: str
                 for c, role in zip(vc, site.cameras):
                     with c:
                         webui.video(site, ev, role, label_role=False)
-                cur[eid] = st.pills("틀린 항목", MARKS, selection_mode="multi", format_func=lambda m: MARK_KO[m],
-                                    key=key, label_visibility="collapsed") or []
+                cur[eid] = webui.labeled_pills("틀린 항목", MARKS, lambda m: MARK_KO[m], key)
     for i in range(len(batch), GRID_N):
         with grid[i // 2][i % 2]:
             st.empty()

@@ -14,10 +14,18 @@ from pathlib import Path
 
 VERDICTS = {"tp": "정탐", "fp": "오탐"}          # 2026-09-14 '애매' 제거 — 정탐/오탐 이분법
 LEGACY_VERDICTS = {"unsure": "애매"}           # 예전 세션 파일에 남아 있을 수 있는 값 (읽기만)
+FP_CLASSES = ("helmet", "harness", "hook")    # 오탐 클래스 (2026-09-15 추가). 예전 판정에는 classes 가 없다
 
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _hist_ids(h) -> list[str]:
+    """history 항목 → event_id 목록. 형식: 'id'(예전 1개씩) · ['id', ...](예전 묶음) · {"ids": [...], "prev": {...}}(현재)."""
+    if isinstance(h, dict):
+        return list(h.get("ids") or [])
+    return list(h) if isinstance(h, list) else [h]
 
 
 @dataclass
@@ -67,33 +75,52 @@ class Session:
             lst.append({"by": reviewer, "ip": ip, "at": _now()})
             self.save()
 
-    def set(self, event_id: str, verdict: str, reviewer: str, memo: str = "", ip: str = "") -> None:
-        self.set_many({event_id: verdict}, reviewer, ip=ip, memos={event_id: memo})
+    def set(self, event_id: str, verdict: str, reviewer: str, memo: str = "", ip: str = "", classes: list[str] | None = None) -> None:
+        self.set_many({event_id: verdict}, reviewer, ip=ip, memos={event_id: memo}, classes={event_id: classes or []})
 
-    def set_many(self, verdicts: dict[str, str], reviewer: str, ip: str = "", memos: dict[str, str] | None = None) -> None:
-        """여러 이벤트를 한 번에 판정 (그리드 모드). history 에는 묶음 하나로 들어가 되돌리기가 묶음 단위."""
+    def set_many(self, verdicts: dict[str, str], reviewer: str, ip: str = "", memos: dict[str, str] | None = None,
+                 classes: dict[str, list[str]] | None = None) -> None:
+        """여러 이벤트를 한 번에 판정 (그리드 모드). history 에는 묶음 하나로 들어가 되돌리기가 묶음 단위.
+
+        classes: 오탐 이벤트의 오탐 클래스 {event_id: ["helmet"|"harness"|"hook", ...]}. 정탐이면 무시(빈 목록).
+        """
         for v in verdicts.values():
             if v not in VERDICTS:
                 raise ValueError(v)
         if not verdicts:
             return
-        memos = memos or {}
+        memos, classes = memos or {}, classes or {}
         now = _now()
+        prev = {eid: self.data["verdicts"].get(eid) for eid in verdicts}
         for eid, v in verdicts.items():
-            self.data["verdicts"][eid] = {"verdict": v, "at": now, "by": reviewer, "ip": ip, "memo": memos.get(eid, "")}
-        hist = self.data["history"]
-        ids = list(verdicts)
+            cls = [k for k in FP_CLASSES if k in (classes.get(eid) or [])] if v == "fp" else []
+            memo = memos.get(eid, (prev[eid] or {}).get("memo", ""))
+            self.data["verdicts"][eid] = {"verdict": v, "classes": cls, "at": now, "by": reviewer, "ip": ip, "memo": memo}
         # 같은 이벤트가 이미 history 에 있으면(재판정) 옛 항목에서 제거
-        for i, h in enumerate(hist):
-            if isinstance(h, list):
-                hist[i] = [x for x in h if x not in verdicts]
-            elif h in verdicts:
-                hist[i] = None
-        self.data["history"] = [h for h in hist if h and (not isinstance(h, list) or h)]
-        self.data["history"].append(ids if len(ids) > 1 else ids[0])
+        hist = []
+        for h in self.data["history"]:
+            ids_h = _hist_ids(h)
+            keep = [x for x in ids_h if x not in verdicts]
+            if not keep:
+                continue
+            if isinstance(h, dict):
+                hist.append({"ids": keep, "prev": {k: v for k, v in (h.get("prev") or {}).items() if k in keep}})
+            else:
+                hist.append(keep if isinstance(h, list) else keep[0])
+        # 되돌리기가 '판정 삭제'가 아니라 '이전 판정 복원'이 되도록 이전 값을 같이 남긴다 (2026-09-15, 재판정·항목 분류 대비)
+        hist.append({"ids": list(verdicts), "prev": prev})
+        self.data["history"] = hist
         if reviewer:
             self.data["reviewer"] = reviewer
         self.save()
+
+    def set_classes(self, event_id: str, classes: list[str]) -> None:
+        """이미 오탐으로 판정한 이벤트의 오탐 클래스만 고친다 (history 에는 안 남김)."""
+        v = self.data["verdicts"].get(event_id)
+        cls = [k for k in FP_CLASSES if k in classes]
+        if v is not None and v.get("verdict") == "fp" and v.get("classes", []) != cls:
+            v["classes"] = cls
+            self.save()
 
     def set_memo(self, event_id: str, memo: str) -> None:
         v = self.data["verdicts"].get(event_id)
@@ -102,24 +129,29 @@ class Session:
             self.save()
 
     def undo(self) -> list[str]:
-        """마지막 판정(또는 묶음)을 지우고 지운 event_id 목록을 돌려준다."""
+        """마지막 판정(또는 묶음)을 되돌리고 그 event_id 목록을 돌려준다. 재판정이었으면 이전 판정으로 복원."""
         hist = self.data["history"]
         if not hist:
             return []
         last = hist.pop()
-        ids = last if isinstance(last, list) else [last]
+        prev = (last.get("prev") or {}) if isinstance(last, dict) else {}
+        ids = _hist_ids(last)
         for eid in ids:
-            self.data["verdicts"].pop(eid, None)
+            if prev.get(eid):
+                self.data["verdicts"][eid] = prev[eid]
+            else:
+                self.data["verdicts"].pop(eid, None)
         self.save()
         return ids
 
     def last_judged_id(self) -> str | None:
         """이어하기용: 마지막으로 판정한 이벤트 ID (묶음이면 그 마지막)."""
         hist = self.data["history"]
-        if not hist:
-            return None
-        last = hist[-1]
-        return last[-1] if isinstance(last, list) else last
+        return _hist_ids(hist[-1])[-1] if hist else None
+
+    def unclassified_fp_ids(self) -> list[str]:
+        """오탐인데 오탐 항목(classes)이 없는 이벤트 — 2026-09-15 이전 판정."""
+        return [k for k, v in self.data["verdicts"].items() if v.get("verdict") == "fp" and not v.get("classes")]
 
     # ── 내보내기 ──
     def mark_exported(self, event_id: str, files: list[str]) -> None:

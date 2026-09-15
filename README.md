@@ -148,7 +148,7 @@ scripts\review fetch HANIL 2026-09-07 --verdict denied --bct 7 --dry-run
 - **이벤트 ID** `{SITE}-{bct}-{yyyymmdd_HHMMSS}` = MinIO 키 `{bct}/{ts}/`. hook/ppe 는 스트림.
 - **접근** `sites.json` 의 `access`: `direct`(현장서버 ZeroTier IP) 또는 `tunnel`(엣지노드 SSH 포트포워딩으로 LAN IP 우회). 둘 다 읽기 전용.
 - **판정·점수** Influx `gate_event` (`allowed`, `hook/helmet/harness_score`). 사유는 Influx 에 없어 `thresholds` 로 유도 (엣지 `decision_engine` 과 동일 규칙).
-- **저장** `--out` > NAS `\\192.168.33.22\DEV\2026_retrain_dataset`(접근 가능할 때) > `data/review/` 순. 경로 `{site}/{yyyy-mm-dd}/{event_id}/{hook,ppe}.mp4` + `fetch.json`.
+- **저장** `--out` > NAS `\\192.168.33.22\DEV\2026_retrain_dataset`(접근 가능할 때) > `data/review/` 순. 경로 `{site}/{yyyy-mm-dd}/{hook|ppe}/{yyyymmdd_HHMMSS}_{bct}_{role}.mp4` + `fetch.json`.
 - **메모 형식** 그대로: `* 26/08/26` 줄 아래 `0946 7` (HHMM BCT). 매칭 실패·중복은 ±10분 후보와 함께 보고한다.
 - 현장 추가 = `sites.json` 항목 하나 + `secrets.local.json` 항목 하나. 현장 방문·현장 변경 없음.
 
@@ -185,15 +185,33 @@ scripts\review_app.bat        # cmd 용 (Ctrl+C 시 "일괄 작업을 끝내시�
 - **보기 모드** 사이드바에서 전환.
   - **4개씩 (2×2, 기본)** 이벤트 4개 × 카메라 2대 = 영상 8개가 한 화면에. 각 타일에 번호와 "오탐으로 표시" 체크박스.
     키보드 `1`~`4` 체크 토글 · `P` 전부 정탐 · `N` 체크한 것 오탐(나머지 정탐) · `Z` 되돌리기(4개 묶음 단위).
-  - **1개씩** hook·ppe 나란히 + 한 줄 메모. `←` 정탐 `→` 오탐 `Space` 건너뛰기 `Z` 되돌리기.
+    **오탐 항목**: 체크한 타일에 `1 안전모 · 2 하네스 · 3 안전고리` 칩이 생긴다. 타일 번호를 누르면 그 타일이 파란 테두리로
+    활성화되고(체크 안 돼 있었으면 체크도), 이어서 누른 `1`~`3` 이 그 타일의 오탐 항목 토글이 된 뒤 다시 타일 선택으로 돌아온다.
+    `Backspace` = 활성 타일 체크 해제 · `Esc` = 고르지 않고 빠짐. 한 타일에 항목을 더하려면 번호 → 항목을 한 번 더.
+    예: `3` `3` `1` `2` `N` → 3번 안전고리 오탐, 1번 하네스 오탐, 나머지 정탐.
+    이미 오탐으로 저장된 타일은 체크된 채 열리고 저장된 항목이 칩에 들어가 있다. 되돌리기는 이전 판정으로 복원한다(재판정해도 안전).
+  - **1개씩** hook·ppe 나란히 + 오탐 항목 칩 + 한 줄 메모. `←` 정탐 `→` 오탐 `Space` 건너뛰기 `Z` 되돌리기 · `1`~`3` 오탐 항목 토글.
+  - 오탐 항목은 `session.json` 판정의 `classes`(`helmet`/`harness`/`hook`)에 남고, 하루치 목록에 "오탐 항목" 칸으로 보인다.
+  - **예전 오탐 분류** (2026-09-15 이전 판정엔 항목이 없다): 일자 표의 "항목 미분류" 칸으로 날짜를 찾고, 필터 `상태 → 항목 미분류`.
+    타일에 그 이벤트의 ❌ 클래스가 제안값으로 들어가 있으니 확인·수정 후 `N`. 저장한 묶음은 목록에서 빠지고 다음 묶음이 온다.
+- **모델** 상단 알약에 현장 탐지 모델(예: `PPE 260827ppe2 · Hook 260828hook`). 엣지노드 SSH 로 `compose.yml` 의 모델 파일 해시와
+  체크포인트의 학습 이름을 읽어 `{저장루트}/_config/models/{SITE}.json` 에 저장하고, 6시간마다 뒤에서 갱신한다(SSH 키 없는 PC 는 저장된 값만).
+  수동 갱신: `scripts\review models HANIL`.
 - **영상** `_tg/`(박스 있는 640) 우선, 없으면 학습용. 자동·반복 재생, 기본 2배속(사이드바에서 조절). 브라우저가 못 여는 코덱이면 ffmpeg 로 H.264 변환(로컬 캐시 `data/review/_cache/`).
 - **판정 저장** 누를 때마다 `{저장루트}/{site}/{date}/session.json` 에 기록. 중간에 꺼도 마지막 판정 다음부터 이어서. SQLite 아님(SMB 동시쓰기 잠금 회피).
   그리드에서 판정한 묶음은 `history` 에 리스트 하나로 들어가 되돌리기가 묶음 단위다.
-- **영상 내보내기** 사이드바 버튼. 오탐으로 찍은 이벤트의 학습용(박스 없음) mp4를 받는다. 정탐은 기록만.
+- **영상 내보내기** 사이드바 버튼 = 이 날짜를 NAS 에 반영. 오탐 이벤트의 학습용(박스 없음) mp4를 **오탐 항목에 맞는 카메라만** 받는다.
+  안전고리 → `hook.mp4`, 안전모·하네스 → `ppe.mp4`, 둘 다면 둘 다, 항목 미분류면 둘 다(분류하면 정리됨).
+  필요 없어진 영상(항목이 바뀌었거나 정탐으로 바뀐 이벤트)은 지운다. 판정 기록에 없는 폴더는 건드리지 않는다.
+- **☁️ 검수 자료 전량 업데이트** 사이드바 맨 위 버튼. 모든 현장·일자의 검수 기록을 훑어 NAS 에 반영 안 된 것을 한 번에 받고 정리한다.
+  CLI 도 같다: `scripts\review sync --dry-run -v` 로 미리 보기, `scripts\review sync` 로 실행.
   ```
-  {저장루트}/{site}/{date}/session.json      정탐·오탐 판정 전부 (검수자·IP·시각·메모)
-  {저장루트}/{site}/{date}/{event_id}/       오탐 영상 hook.mp4 · ppe.mp4
+  {저장루트}/{site}/{date}/session.json      정탐·오탐 판정 전부 (오탐 항목·검수자·IP·시각·메모), exported = NAS 에 있는 영상
+  {저장루트}/{site}/{date}/hook/20260907_042915_bct13_hook.mp4    안전고리 오탐 영상
+  {저장루트}/{site}/{date}/ppe/20260907_132613_bct9_ppe.mp4       안전모·하네스 오탐 영상
   ```
+  같은 날짜 안에서는 이벤트별 폴더를 만들지 않고 카메라 폴더에 모은다(파일명 = 트리거 시각 + BCT + 카메라).
+  예전 구조(`{date}/{event_id}/hook.mp4`)로 받아 둔 영상은 반영할 때 새 구조로 옮기고 빈 폴더는 지운다(다시 받지 않음).
 - **저장 루트** `BCT_REVIEW_OUT` 환경변수 > NAS `\\192.168.33.22\DEV\2026_retrain_dataset` (안 붙어 있으면 `secrets.local.json` 의 `nas` 자격으로 `net use` 한 번 시도) > `data/review/`.
 - **로그인** 첫 화면에서 ID/비밀번호. 계정은 `config/users.local.json`(gitignore)에 PBKDF2 해시로 저장.
   ```powershell
