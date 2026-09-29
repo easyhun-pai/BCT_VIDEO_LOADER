@@ -6,6 +6,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import socket
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -105,18 +109,58 @@ class Settings:
         return ok
 
     def force_nas_retry(self) -> None:
+        """'NAS 다시 연결' 버튼: 쿨다운과 기억해 둔 저장 루트를 지워 다음 호출에서 다시 확인한다."""
         self._nas_tried_at = 0.0
+        self._root_cache = None
 
-    def resolve_out_root(self, override: str | None = None) -> tuple[Path, str]:
-        """저장 루트 결정: --out > NAS(접근 가능할 때, 필요하면 자동 연결) > 로컬 폴백. (경로, 출처) 반환."""
-        if override:
-            return Path(override), "--out"
-        if self.nas_root and (os.path.isdir(self.nas_root) or self._try_connect_nas()):
+    def _nas_reachable(self, timeout: float = 2.0) -> bool:
+        """NAS 호스트의 SMB 포트(445)에 TCP 로 닿는지 먼저 본다. 안 닿으면 os.path.isdir / net use 는 20초씩 걸리므로 건너뛴다."""
+        m = re.match("^" + chr(92) * 4 + "([^" + chr(92) * 2 + "]+)", self.nas_root or "")   # UNC \host\share 의 host
+        if not m:
+            return True                                   # UNC 가 아니면 (로컬 경로 등) 그냥 확인
+        try:
+            with socket.create_connection((m.group(1), 445), timeout=timeout):
+                return True
+        except OSError as e:
+            self.nas_last_error = f"NAS {m.group(1)}:445 에 닿지 않음 ({e.__class__.__name__})"
+            return False
+
+    def _probe_root(self) -> tuple[Path, str]:
+        """실제 확인 (느릴 수 있음): NAS 포트 → 경로 → net use → 로컬 폴백."""
+        if self.nas_root and self._nas_reachable() and (os.path.isdir(self.nas_root) or self._try_connect_nas()):
             return Path(self.nas_root), "NAS"
         fb = Path(self.local_fallback)
         if not fb.is_absolute():
             fb = (self.cfg_dir / fb).resolve()
         return fb, "local_fallback"
+
+    def _refresh_root_bg(self) -> None:
+        try:
+            res = self._probe_root()
+            self._root_cache = (time.time(), res[0], res[1])
+        finally:
+            self._root_refreshing = False
+
+    ROOT_RECHECK_SEC = 300
+
+    def resolve_out_root(self, override: str | None = None) -> tuple[Path, str]:
+        """저장 루트 결정: --out > NAS(접근 가능할 때, 필요하면 자동 연결) > 로컬 폴백. (경로, 출처) 반환.
+
+        결과는 기억해 둔다 — 웹앱은 렌더마다 부르는데 NAS 가 안 닿는 PC 에서는 확인 한 번이 20초씩 걸렸다 (2026-09-27).
+        로컬 폴백으로 정해진 뒤에는 5분마다 뒤(스레드)에서만 다시 확인하고, 렌더는 절대 막지 않는다. 강제 재확인은 force_nas_retry().
+        """
+        if override:
+            return Path(override), "--out"
+        c = getattr(self, "_root_cache", None)
+        if c is not None:
+            at, path, src = c
+            if src != "NAS" and time.time() - at > self.ROOT_RECHECK_SEC and not getattr(self, "_root_refreshing", False):
+                self._root_refreshing = True
+                threading.Thread(target=self._refresh_root_bg, daemon=True).start()
+            return path, src
+        path, src = self._probe_root()
+        self._root_cache = (time.time(), path, src)
+        return path, src
 
 
 def load(cfg_dir: str | os.PathLike | None = None) -> Settings:

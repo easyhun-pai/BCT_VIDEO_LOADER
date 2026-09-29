@@ -22,7 +22,7 @@ def users_path(st: Settings, for_write: bool = False) -> Path:
     env = os.environ.get("BCT_REVIEW_USERS")
     if env:
         return Path(env)
-    if st.nas_root and os.path.isdir(st.nas_root):
+    if st.nas_root and st.resolve_out_root()[1] == "NAS":      # isdir 직접 호출은 NAS 가 안 닿는 PC 에서 20초 걸린다 → 기억해 둔 판단 사용
         nas = Path(st.nas_root) / "_config" / "users.json"
         if nas.exists() or for_write and False:   # 쓰기 기본은 로컬. NAS 공유는 명시적으로 옮길 때만.
             return nas
