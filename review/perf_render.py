@@ -30,13 +30,41 @@ def _delta(v, higher_better: bool) -> str:
 # ══════════════════════════════════════════════════════════════════════════
 # 차트
 # ══════════════════════════════════════════════════════════════════════════
+
+def _sampling_text(s: dict) -> str:
+    ps = s.get("pool_stats", {}); prog = s["progress"]
+    base = (f"{s['month']} 이벤트 {_n(ps.get('events', 0))}건 중 판정 연동·점수·영상이 모두 있는 후보 {_n(ps.get('eligible', 0))}건에서 "
+            f"BCT 당 {s['per_bct_target']}건을 뽑았다(시드 {s['seed']}, 후보 생성 {s.get('pool_created_at', '')[:16].replace('T', ' ')}). ")
+    if s.get("sampling"):
+        dist = s.get("sample_dist") or []
+        a, d = sum(x["allowed"] for x in dist), sum(x["denied"] for x in dist)
+        how = (f"층화 추출: BCT 마다 시스템 승인·거부를 반반으로 하되 한쪽이 모자라면 그쪽은 전부 넣고 나머지를 다른 쪽에서 채웠다"
+               f"(표본 승인 {_n(a)} · 거부 {_n(d)}). 승인·거부 각각 안에서는 일자 → 시간대(2시간) 순으로 번갈아 골라 특정 날짜·시간대에 쏠리지 않게 했다. "
+               f"판단이 불가능해 제외한 표본은 같은 BCT·같은 판정의 다음 후보로 채웠다(제외 {_n(prog['excluded'])}건).")
+    else:
+        how = f"무작위 추출. 후보가 부족한 BCT 는 전부. 판단이 불가능해 제외한 표본은 같은 BCT 의 다음 무작위 후보로 채웠다(제외 {_n(prog['excluded'])}건)."
+    return base + how
+
+
+def _sample_dist_table(s: dict) -> str:
+    dist = s.get("sample_dist") or []
+    if not dist or not s.get("sampling"):
+        return ""
+    rows = "".join(f"<tr><td>{x['bct'].upper()}</td><td class=n>{_n(x['sample'])}</td><td class=n>{_n(x['allowed'])} / {_n(x['denied'])}</td>"
+                   f"<td class=n>{_n(x['cand_allowed'])} / {_n(x['cand_denied'])}</td><td class=n>{x['days']} / {x['cand_days']}</td>"
+                   f"<td class=n>{x['top_day']} ({x['top_day_n']})</td><td class=n>{x['hours']}</td></tr>" for x in dist)
+    return (f"<h3>표본 분포</h3><table><thead><tr><th>BCT</th><th>표본</th><th>승인 / 거부</th><th>후보 승인 / 거부</th>"
+            f"<th>날짜 수 / 후보 날짜</th><th>최다 날짜 (건)</th><th>시간(시) 수</th></tr></thead><tbody>{rows}</tbody></table>")
+
+
 def make_charts(s: dict, out: Path) -> dict[str, Path]:
     plt = _mpl()
     charts: dict[str, Path] = {}
     pb = [b for b in s["per_bct"] if b["n"]]
     if pb:
         p = out / "chart_bct_accuracy.png"
-        fig, ax = plt.subplots(figsize=(9, 3.4))
+        opts = s.get("chart_opts") or {}
+        fig, ax = plt.subplots(figsize=tuple(opts.get("figsize", (9, 3.4))))
         x = list(range(len(pb)))
         acc = [b["accuracy"] for b in pb]
         lo = [b["accuracy"] - b["ci"][0] for b in pb]
@@ -51,7 +79,8 @@ def make_charts(s: dict, out: Path) -> dict[str, Path]:
             ax.axhline(ov, color=MUTED, ls="--", lw=1)
             ax.annotate(f"전체 {ov:.1f}%", (-0.5, ov), textcoords="offset points", xytext=(-4, 0), ha="right", va="center", fontsize=8, color=MUTED,
                         annotation_clip=False)
-        ax.set_xticks(x); ax.set_xticklabels([b["bct"].upper() for b in pb])
+        ax.set_xticks(x); ax.set_xticklabels([b["bct"].upper() for b in pb], rotation=opts.get("rotate", 0),
+                                             ha="right" if opts.get("rotate") else "center", fontsize=opts.get("fontsize", 10))
         ymin = max(0, min(b["ci"][0] for b in pb) - 10)
         ax.set_ylim(ymin, 108); ax.set_ylabel("출입 판정 정확도 (%)")
         ax.set_title("BCT 별 출입 판정 정확도 (막대 끝 선 = 95% 신뢰구간)", loc="left"); ax.grid(axis="y", color=GRID, zorder=0)
@@ -206,8 +235,9 @@ def make_html(s: dict, cmp: dict | None, charts: dict[str, Path], out: Path) -> 
 <table><thead><tr><th>BCT</th><th>시각</th><th>시스템</th><th>실제</th><th>틀린 항목</th><th>이벤트 ID</th></tr></thead><tbody>{error_rows()}</tbody></table>
 
 <h2>부록 · 표본과 정의</h2>
+{_sample_dist_table(s)}
 <dl class="defs">
-<dt>표본</dt><dd>{s['month']} 이벤트 {_n(ps.get('events', 0))}건 중 판정 연동·점수·영상이 모두 있는 후보 {_n(ps.get('eligible', 0))}건에서 BCT 당 {s['per_bct_target']}건을 무작위로 뽑았다(시드 {s['seed']}, 후보 생성 {s.get('pool_created_at', '')[:16].replace('T', ' ')}). 후보가 부족한 BCT 는 전부. 판단이 불가능해 제외한 표본은 같은 BCT 의 다음 무작위 후보로 채웠다(제외 {_n(prog['excluded'])}건).</dd>
+<dt>표본</dt><dd>{_sampling_text(s)}</dd>
 <dt>채점</dt><dd>검수자가 영상을 보고 모델 판정이 틀린 항목만 표시했다. 표시하지 않은 항목은 모델이 맞은 것으로 본다. 실제 출입 = 세 항목 모두 실제로 착용·체결이면 승인.</dd>
 <dt>출입 판정 정확도</dt><dd>시스템의 승인/거부가 실제와 같은 비율. 괄호의 신뢰구간은 Wilson 95%.</dd>
 <dt>부당 거부 · 부당 승인</dt><dd>부당 거부 = 시스템 거부인데 실제는 승인 대상(작업자 불편). 부당 승인 = 시스템 승인인데 실제는 거부 대상(안전 위험).</dd>

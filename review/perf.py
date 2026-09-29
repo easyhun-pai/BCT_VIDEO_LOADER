@@ -5,11 +5,15 @@
     {root}/_perf/{site}/{yyyy-mm}/review.json   검수 대기열 · 채점 · 되돌리기 이력 (누를 때마다 원자적 저장)
     {root}/_perf/{site}/{yyyy-mm}/report/       리포트 산출물 (HTML · PDF · CSV · summary.json)
 
-표본 규칙
+표본 규칙 (층화, 2026-09-27)
   · 후보 = 그 달 이벤트 중 판정(Influx)이 조인되고 세 클래스 점수가 모두 있으며 영상이 있는 것.
-  · BCT 별로 후보를 시드 고정 셔플해 앞에서부터 N건. 후보가 N건 미만이면 전부.
-  · '제외'(판단 불가: 사람 안 보임·영상 깨짐 등)로 채점하면 같은 BCT 셔플 순서의 다음 후보로 자동 보충.
-    → 표본은 시드와 제외 기록만으로 재현된다.
+  · BCT 별 N건을 **승인/거부 반반**으로 뽑는다 (N=100 → 승인 50 · 거부 50). 한쪽이 모자라면 그쪽은 전부 넣고
+    나머지를 다른 쪽에서 채운다 (예: 단양처럼 승인이 적은 BCT 는 승인 전부 + 거부로 보충). 후보가 N건 미만이면 전부.
+  · 승인/거부 각각 안에서는 **일자 → 시간대(2시간 단위)** 라운드로빈으로 고른다: 모든 날짜를 한 바퀴 돌며 하나씩,
+    한 날짜 안에서는 시간대를 번갈아. 특정 날짜·시간대에 쏠리지 않는다 (건수가 많은 날도 같은 몫).
+  · 순서는 시드로 고정. 후보 목록(pool.json)의 BCT 별 순서 = [승인 표본][거부 표본][보충 순서(승인·거부 번갈아)].
+  · '제외'(판단 불가: 사람 안 보임·영상 깨짐 등)로 채점하면 같은 BCT·**같은 판정(승인/거부)** 의 다음 후보로 자동 보충
+    (그 판정의 후보가 다 떨어지면 다른 판정에서). → 표본은 시드와 제외 기록만으로 재현된다.
 
 채점 (클래스별)
   · 모델 판정: 클래스 점수 ≥ 현장 임계값이면 ⭕(착용/체결), 아니면 ❌. 출입 판정은 Influx verdict.
@@ -101,19 +105,95 @@ def collect_candidates(site, acc, month: str, tz: str, progress=None) -> tuple[l
     return rows, stats
 
 
+HOUR_BIN = 2                                  # 시간대 층: 2시간 단위 (0-2시, 2-4시, …)
+
+
+def _day_of(r: dict) -> str:
+    return r["ts"][:8]
+
+
+def _hour_bin(r: dict) -> int:
+    return int(r["ts"][9:11]) // HOUR_BIN
+
+
+def _round_robin(rows: list[dict], keys: list, rng: random.Random) -> list[dict]:
+    """rows 를 keys[0] 로 묶고 묶음을 번갈아 하나씩 꺼낸 순서로 펼친다. 각 묶음 안은 keys[1:] 로 재귀.
+    → 결과의 앞쪽 k 개는 keys 기준으로 가능한 한 고르게 퍼져 있다 (일자 → 시간대)."""
+    if not keys:
+        rows = list(rows); rng.shuffle(rows); return rows
+    groups: dict = {}
+    for r in rows:
+        groups.setdefault(keys[0](r), []).append(r)
+    seqs = [_round_robin(g, keys[1:], rng) for g in groups.values()]
+    rng.shuffle(seqs)
+    out, pos = [], [0] * len(seqs)
+    while len(out) < len(rows):
+        for i, sq in enumerate(seqs):
+            if pos[i] < len(sq):
+                out.append(sq[pos[i]]); pos[i] += 1
+    return out
+
+
+def _split_target(n_allowed: int, n_denied: int, n: int) -> tuple[int, int]:
+    """N 을 승인/거부 반반으로, 모자라는 쪽은 전부 넣고 나머지를 다른 쪽에서."""
+    na = min(n_allowed, n // 2)
+    nd = min(n_denied, n - na)
+    na = min(n_allowed, n - nd)
+    return na, nd
+
+
+def stratified_order(rows: list[dict], n: int, rng: random.Random) -> tuple[list[dict], dict]:
+    """한 BCT 의 후보를 [승인 표본][거부 표본][보충 순서] 로 정렬. (순서, 층 정보) 반환."""
+    allowed = _round_robin([r for r in rows if r["verdict"] == "allowed"], [_day_of, _hour_bin], rng)
+    denied = _round_robin([r for r in rows if r["verdict"] == "denied"], [_day_of, _hour_bin], rng)
+    na, nd = _split_target(len(allowed), len(denied), n)
+    head = allowed[:na] + denied[:nd]
+    ta, td = allowed[na:], denied[nd:]
+    tail = [x for pair in zip(ta, td) for x in pair] + ta[max(0, len(td)):] + td[max(0, len(ta)):]
+    ordered = head + tail
+    assert len(ordered) == len(rows)
+    return ordered, {"allowed": na, "denied": nd, "cand_allowed": len(allowed), "cand_denied": len(denied),
+                     "days": len({_day_of(r) for r in head}), "cand_days": len({_day_of(r) for r in rows})}
+
+
 def build_pool(site, month: str, rows: list[dict], stats: dict, per_bct: int, seed: int, by: str) -> dict:
     by_bct: dict[str, list[dict]] = {}
     for r in sorted(rows, key=lambda r: (r["bct"], r["ts"])):
         by_bct.setdefault(r["bct"], []).append(r)
     rng = random.Random(seed)
+    strata: dict[str, dict] = {}
     for bct in sorted(by_bct, key=_bct_key):
-        rng.shuffle(by_bct[bct])
+        by_bct[bct], strata[bct] = stratified_order(by_bct[bct], per_bct, rng)
     return {
         "site": site.code, "site_name": site.name, "month": month, "seed": seed, "per_bct": per_bct,
+        "sampling": {"method": "stratified", "verdict_split": "half", "order": ["day", f"hour/{HOUR_BIN}h"], "strata": strata},
         "thresholds": {f"{k}_score": site.thresholds.get(f"{k}_score", 0.5) for k in CLASS_KEYS},
         "tg_prefix": site.tg_prefix, "created_at": _now(), "created_by": by, "stats": stats,
         "bcts": {b: by_bct[b] for b in sorted(by_bct, key=_bct_key)},
     }
+
+
+def sample_summary(pool: dict, queue_ids: list[str] | None = None) -> list[dict]:
+    """BCT 별 표본 분포 (승인/거부 · 날짜 수 · 최다 날짜 비중 · 시간대 수) — 치우침 점검용."""
+    n = int(pool["per_bct"])
+    out = []
+    for bct, rows in pool["bcts"].items():
+        picked = [r for r in rows if r["id"] in set(queue_ids)] if queue_ids is not None else rows[:n]
+        days: dict[str, int] = {}
+        hours: dict[int, int] = {}
+        for r in picked:
+            days[_day_of(r)] = days.get(_day_of(r), 0) + 1
+            hours[int(r["ts"][9:11])] = hours.get(int(r["ts"][9:11]), 0) + 1
+        top_day = max(days.items(), key=lambda kv: kv[1]) if days else ("", 0)
+        out.append({"bct": bct, "sample": len(picked), "candidates": len(rows),
+                    "allowed": sum(1 for r in picked if r["verdict"] == "allowed"),
+                    "denied": sum(1 for r in picked if r["verdict"] == "denied"),
+                    "cand_allowed": sum(1 for r in rows if r["verdict"] == "allowed"),
+                    "cand_denied": sum(1 for r in rows if r["verdict"] == "denied"),
+                    "days": len(days), "cand_days": len({_day_of(r) for r in rows}),
+                    "top_day": f"{top_day[0][4:6]}/{top_day[0][6:8]}" if top_day[0] else "", "top_day_n": top_day[1],
+                    "hours": len(hours), "hour_hist": {h: hours.get(h, 0) for h in range(24)}})
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -230,9 +310,15 @@ class PerfStore:
         return {"total": tot, "per_bct": per}
 
     # ── 채점 ──
-    def _next_candidate(self, bct: str) -> str | None:
+    def _next_candidate(self, bct: str, verdict: str | None = None) -> str | None:
+        """같은 BCT 의 아직 대기열에 없는 다음 후보. 층화 표본이면 같은 판정(승인/거부)을 먼저 찾고, 없으면 아무거나."""
         inq = set(self.queue)
-        return next((r["id"] for r in self.pool["bcts"].get(bct, []) if r["id"] not in inq), None)
+        rest = [r for r in self.pool["bcts"].get(bct, []) if r["id"] not in inq]
+        if verdict and self.pool.get("sampling"):
+            same = next((r["id"] for r in rest if r["verdict"] == verdict), None)
+            if same:
+                return same
+        return rest[0]["id"] if rest else None
 
     def commit(self, batch: dict[str, dict], by: str, ip: str = "") -> list[str]:
         """batch = {event_id: {"wrong": [class...], "excluded": bool}}. 새로 제외된 이벤트마다 같은 BCT 에서 보충.
@@ -250,7 +336,7 @@ class PerfStore:
             prev[eid] = old
             self.data["judgments"][eid] = {"wrong": [] if excluded else wrong, "excluded": excluded, "at": now, "by": by, "ip": ip}
             if excluded and not (old and old.get("excluded")):
-                nid = self._next_candidate(self.rows[eid]["bct"])
+                nid = self._next_candidate(self.rows[eid]["bct"], self.rows[eid].get("verdict"))
                 if nid:
                     self.queue.append(nid); added.append(nid)
         self.data["history"].append({"ids": list(batch), "prev": prev, "added": added, "at": now})
@@ -386,6 +472,7 @@ def summarize(store: PerfStore) -> dict:
         "site": store.pool["site"], "site_name": store.pool.get("site_name", store.pool["site"]), "month": store.pool["month"],
         "model": store.data.get("model", ""), "seed": store.pool["seed"], "per_bct_target": store.pool["per_bct"],
         "thresholds": store.pool["thresholds"], "pool_stats": store.pool.get("stats", {}), "pool_created_at": store.pool.get("created_at", ""),
+        "sampling": store.pool.get("sampling"), "sample_dist": sample_summary(store.pool, store.queue),
         "progress": prog["total"], "complete": prog["total"]["pending"] == 0,
         "overview": {**overview, "weighted_accuracy": weighted},
         "per_bct": per_bct, "per_class": per_class,
