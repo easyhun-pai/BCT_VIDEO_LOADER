@@ -239,8 +239,12 @@ def page_month(site, month: str):
 
     prog = store.progress()["total"]
     header(f"{site.name} · {month}")
+    q = _quick_stats(store)
     pills([("표본", f"{prog['target']:,}", ""), ("채점", f"{prog['done']:,}/{prog['done'] + prog['pending']:,}", ""),
            ("유효", f"{prog['valid']:,}", "ok"), ("제외", f"{prog['excluded']:,}", "fp" if prog["excluded"] else ""),
+           ("틀림", f"{q['wrong']:,}", "fp" if q["wrong"] else ""),
+           ("오탐·부당거부", f"{q['fp']:,}", "fp" if q["fp"] else ""), ("미탐·부당승인", f"{q['fn']:,}", "fp" if q["fn"] else ""),
+           ("출입 정확도", _pct(q["accuracy"]), "ok" if (q["accuracy"] or 0) >= 95 else ("warn" if q["n"] else "")),
            ("모델", store.data.get("model") or "미기재", "" if store.data.get("model") else "warn"),
            ("저장", "NAS" if src == "NAS" else "이 PC", "" if src == "NAS" else "warn")])
 
@@ -270,6 +274,19 @@ def page_month(site, month: str):
         st.session_state.pf_idx = store.first_pending_index(ids)
     idx = max(0, min(st.session_state.get("pf_idx", 0), len(ids) - 1))
     review_grid(site, store, ids, idx, f_state, rate)
+
+
+def _quick_stats(store: PerfStore) -> dict:
+    """상단 알약용 중간 집계 (채점된 유효 표본 기준, 리포트와 같은 정의).
+    틀림 = 항목 하나라도 틀린 표본 · 오탐 = 모델 ❌인데 실제 ⭕ 인 항목이 있는 표본 · 미탐 = 모델 ⭕인데 실제 ❌ 인 항목이 있는 표본
+    출입 정확도 = 시스템 승인/거부가 실제와 같은 비율."""
+    rows = graded_rows(store)
+    fp = sum(1 for r in rows if any(not r[f"{k}_pred"] and r[f"{k}_gt"] for k in CLASS_KEYS))
+    fn = sum(1 for r in rows if any(r[f"{k}_pred"] and not r[f"{k}_gt"] for k in CLASS_KEYS))
+    ok = sum(1 for r in rows if r["verdict_ok"])
+    return {"n": len(rows), "wrong": sum(1 for r in rows if not r["all_ok"]), "fp": fp, "fn": fn,
+            "accuracy": round(100.0 * ok / len(rows), 1) if rows else None}
+
 
 
 def _tile_key(i: int, judged: bool, marks: list[str], denied: bool) -> str:
