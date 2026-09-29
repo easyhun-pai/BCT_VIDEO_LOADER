@@ -589,6 +589,11 @@ def sidebar_user(clear_keys: tuple[str, ...], sync_all: bool = False):
     if not u:
         return
     with st.sidebar:
+        # 맨 위: 홈(현장 선택으로) — 로그인은 유지하고 현장·일자·검수 상태만 지운다
+        if st.button("🏠 홈 · 현장 선택", key="btn_home", width="stretch", disabled=not st.session_state.get("site_code")):
+            for k in clear_keys:
+                st.session_state.pop(k, None)
+            st.rerun()
         c1, c2 = st.columns([2, 1])
         with c1:
             st.markdown(f"👤 **{u['name']}**")
