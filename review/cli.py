@@ -10,6 +10,11 @@
   report SITE FROM TO [--gap 300] 기간 출입 통계 리포트 (시도 세션 · BCT/일별/시간대 · 사유 · PDF)
   models SITE                    엣지노드 탐지 모델 정보 갱신 (SSH, 웹 헤더에 표시)
   sync [SITE] [--dry-run]        오탐 영상 NAS 반영 (오탐 항목: 안전고리→hook, 안전모·하네스→ppe)
+  perf make SITE|all MONTH       월간 성능 검수 표본 만들기 (BCT 당 N건, 승인/거부 반반 + 일자·시간대 분산). 채점은 웹 :8502
+  perf show SITE|all MONTH       표본 분포·진행 상황
+  perf report SITE MONTH         채점 결과 리포트 (HTML·PDF·CSV) — 웹의 '리포트 만들기'와 같음
+  perf combined all MONTH        모든 현장을 합친 통합 리포트 PDF 한 부 (1장 환경·기준·종합 → 통합/현장별 상세 → 이벤트 목록)
+  perf retrain all MONTH         오탐·미탐 이벤트의 추가 학습용 클립 목록 (retrain_clips.json · retrain_event_ids.txt)
 """
 from __future__ import annotations
 
@@ -379,6 +384,103 @@ def cmd_sync(a, st):
     return 0
 
 
+def _perf_sites(st, arg: str):
+    return list(st.sites.values()) if arg.lower() == "all" else [st.site(arg)]
+
+
+def _perf_dist_table(pool: dict, queue: list[str] | None) -> str:
+    from .perf import sample_summary
+    rows = []
+    for x in sample_summary(pool, queue):
+        hh = x["hour_hist"]
+        bins = [sum(hh[h] for h in range(b, b + 4)) for b in range(0, 24, 4)]     # 0-4 · 4-8 · … · 20-24
+        rows.append([x["bct"], x["sample"], f'{x["allowed"]}/{x["denied"]}', f'{x["cand_allowed"]}/{x["cand_denied"]}',
+                     f'{x["days"]}/{x["cand_days"]}', f'{x["top_day"]} ({x["top_day_n"]})', " ".join(f"{b:2d}" for b in bins)])
+    return tabulate(rows, headers=["bct", "표본", "승인/거부", "후보 승인/거부", "날짜/후보", "최다 날짜", "4시간대별 (0·4·8·12·16·20시)"])
+
+
+def cmd_perf(a, st):
+    """월간 성능 검수 표본 (review/perf.py). make 는 웹 :8502 의 '표본 만들기'와 같은 결과를 만든다."""
+    import random
+    from .perf import PerfStore, build_pool, collect_candidates, month_dir, summarize
+    root, src = st.resolve_out_root(a.out)
+    print(f"[perf] 저장 루트 {root} ({src})", file=sys.stderr)
+    if a.action == "make":
+        for site in _perf_sites(st, a.site):
+            if PerfStore.exists(root, site.code, a.month) and not a.force:
+                print(f"{site.code} {a.month}: 이미 표본이 있습니다 ({month_dir(root, site.code, a.month)}). 다시 만들려면 --force (채점 기록도 지워짐)")
+                continue
+            site.require_secrets()
+            with SiteAccess(site) as acc:
+                rows, stats = collect_candidates(site, acc, a.month, st.timezone,
+                                                 progress=lambda i, n, d, k: print(f"\r  {d} 이벤트 {k:5d}건  ({i}/{n})", end="", file=sys.stderr))
+            print(file=sys.stderr)
+            if not rows:
+                print(f"{site.code} {a.month}: 판정 정보가 있는 이벤트가 없습니다"); continue
+            seed = a.seed or random.SystemRandom().randrange(1, 2**31)
+            pool = build_pool(site, a.month, rows, stats, a.per_bct, seed=seed, by=a.by)
+            model = a.model if a.model is not None else _model_label(st, site, root)
+            store = PerfStore.create(root, pool, model)
+            print(f"{site.code} {a.month}: 이벤트 {stats['events']} · 조인 {stats['joined']} · 후보 {stats['eligible']} → 표본 {len(store.queue)}건 "
+                  f"(BCT 당 {a.per_bct}, 시드 {seed}, 모델 '{model}')\n→ {store.dir}")
+            print(_perf_dist_table(pool, store.queue)); print()
+        return 0
+    if a.action == "show":
+        for site in _perf_sites(st, a.site):
+            if not PerfStore.exists(root, site.code, a.month):
+                print(f"{site.code} {a.month}: 표본 없음"); continue
+            store = PerfStore.open(root, site.code, a.month)
+            pr = store.progress()["total"]
+            print(f"{site.code} {a.month}: 표본 {pr['target']} · 채점 {pr['done']} (유효 {pr['valid']} · 제외 {pr['excluded']}) · 남음 {pr['pending']}"
+                  f" · 시드 {store.pool['seed']} · 모델 '{store.data.get('model', '')}'")
+            print(_perf_dist_table(store.pool, store.queue)); print()
+        return 0
+    if a.action == "combined":
+        from . import perf_combined
+        out = Path(a.out_dir) if a.out_dir else Path(cfgmod.ROOT) / "data" / "_reports" / f"perf_{a.month}"
+        html, pdf, summary = perf_combined.build(st, root, a.month, out)
+        for sec in summary["sections"]:
+            o = sec["overview"]
+            print(f"{sec['name']:8} 표본 {o['n']:5} · 출입 판정 정확도 {o['accuracy']}% (CI {o['ci']}) · 부당 거부 {o['wrong_deny']} · 부당 승인 {o['wrong_allow']}")
+        print(f"→ {html}" + (f"{chr(10)}→ {pdf}" if pdf else f"{chr(10)}  (PDF 는 Chrome/Edge 가 있을 때만)"))
+        return 0
+    if a.action == "retrain":
+        from . import perf_combined
+        out = Path(a.out_dir) if a.out_dir else Path(cfgmod.ROOT) / "data" / "_reports" / f"perf_{a.month}"
+        pj, pi, sm = perf_combined.build_retrain_list(st, root, a.month, out)
+        print(f"오탐·미탐 이벤트 {sm['total_events']}건 · 받을 클립 {sm['total_clips_to_fetch']}개")
+        for code, v in sm["by_site"].items():
+            print(f"  {code:8} {v['events']:3}건 (오탐 {v['fp_events']} · 미탐 {v['fn_events']})")
+        print("  " + " · ".join(f"{k} 오탐 {v['fp']}/미탐 {v['fn']}" for k, v in sm["by_class"].items()))
+        print(f"→ {pj}{chr(10)}→ {pi}")
+        return 0
+    if a.action == "report":
+        from .perf import compare, graded_rows, list_months
+        from .perf_render import build_report
+        site = st.site(a.site)
+        if not PerfStore.exists(root, site.code, a.month):
+            raise SystemExit(f"{site.code} {a.month}: 표본 없음")
+        store = PerfStore.open(root, site.code, a.month)
+        s = summarize(store)
+        base = None
+        if a.base:
+            base = summarize(PerfStore.open(root, site.code, a.base)) if PerfStore.exists(root, site.code, a.base) else None
+        out = Path(a.out_dir) if a.out_dir else store.dir / "report"
+        html, pdf = build_report(s, compare(s, base), graded_rows(store), out)
+        o = s["overview"]
+        print(f"{site.code} {a.month}: 채점 {o['n']}건 · 출입 판정 정확도 {o['accuracy']}% · 부당 거부 {o['wrong_deny']} · 부당 승인 {o['wrong_allow']}"
+              + ("" if s["complete"] else f"  (진행 중: 남음 {s['progress']['pending']})"))
+        print(f"→ {html}" + (f"\n→ {pdf}" if pdf else "\n  (PDF 는 Chrome/Edge 가 있을 때만)"))
+        return 0
+    return 1
+
+
+def _model_label(st, site, root) -> str:
+    """저장된 모델 정보 파일이 있으면 그 이름 (웹 헤더와 같은 값), 없으면 빈 문자열."""
+    from . import models
+    return models.label(models.load(root, site.code))
+
+
 # ── argparse ─────────────────────────────────────────────────────────────
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m review", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -424,6 +526,18 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("site", nargs="?", help="생략하면 모든 현장"); q.add_argument("--out", help="저장 루트 (기본: NAS → 로컬 폴백)")
     q.add_argument("--dry-run", action="store_true"); q.add_argument("-v", "--verbose", action="store_true")
     q.set_defaults(fn=cmd_sync)
+
+    q = sp.add_parser("perf", help="월간 성능 검수 표본 (make|show|report) — 채점은 웹 :8502")
+    q.add_argument("action", choices=["make", "show", "report", "combined", "retrain"]); q.add_argument("site", help="현장 코드 또는 all (combined 는 all)")
+    q.add_argument("month", help="YYYY-MM")
+    q.add_argument("--per-bct", type=int, default=100, help="BCT 당 표본 수 (기본 100 = 승인 50 · 거부 50)")
+    q.add_argument("--seed", type=int, help="재현용 시드 (생략 시 무작위)")
+    q.add_argument("--model", help="모델 버전 표시 (생략 시 저장된 모델 정보)")
+    q.add_argument("--by", default="cli", help="표본 생성자 (기본 cli)")
+    q.add_argument("--force", action="store_true", help="이미 있는 표본을 지우고 다시 만든다 (채점 기록도 지워짐)")
+    q.add_argument("--base", help="report: 비교 기준 월 (YYYY-MM)")
+    q.add_argument("--out", help="저장 루트 (기본: NAS → 로컬 폴백)"); q.add_argument("--out-dir", help="report: 출력 폴더 (기본 {표본}/report)")
+    q.set_defaults(fn=cmd_perf)
 
     q = sp.add_parser("user", help="웹 로그인 계정 관리 (add|list|del)")
     q.add_argument("action", choices=["add", "list", "del"]); q.add_argument("id", nargs="?")
