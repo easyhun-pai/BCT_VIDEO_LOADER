@@ -4,3 +4,4 @@ tabulate>=0.9
 requests>=2.31
 streamlit>=1.38
 matplotlib>=3.8
+pandas>=2.2,<3     # 3.x 는 Windows Smart App Control 이 .pyd 를 차단 (2026-09-27, 평판 없음)
