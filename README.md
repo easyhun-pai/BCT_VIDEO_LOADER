@@ -146,6 +146,7 @@ scripts\review fetch HANIL --ids-file ids.txt --tg     # 클립 다운로드 (--
 scripts\review fetch HANIL 2026-09-07 --verdict denied --bct 7 --dry-run
 scripts\review sync --dry-run -v                       # 검수 기록 → NAS 오탐 영상 반영 미리 보기 (웹 '전량 업데이트'와 같음)
 scripts\review models HANIL                            # 엣지노드 탐지 모델 정보 갱신 (SSH)
+scripts\review perf make all 2026-09                   # 월간 성능 검수 표본 (BCT 당 100, 승인/거부 반반 + 일자·시간대 분산)
 ```
 
 - **이벤트 ID** `{SITE}-{bct}-{yyyymmdd_HHMMSS}` = MinIO 키 `{bct}/{ts}/`. hook/ppe 는 스트림.
@@ -223,6 +224,8 @@ scripts\review_app.bat        # cmd 용 (Ctrl+C 시 "일괄 작업을 끝내시�
   같은 날짜 안에서는 이벤트별 폴더를 만들지 않고 카메라 폴더에 모은다(파일명 = 트리거 시각 + BCT + 카메라).
   예전 구조(`{date}/{event_id}/hook.mp4`)로 받아 둔 영상은 반영할 때 새 구조로 옮기고 빈 폴더는 지운다(다시 받지 않음).
 - **저장 루트** `BCT_REVIEW_OUT` 환경변수 > NAS `\\192.168.33.22\DEV\2026_retrain_dataset` (안 붙어 있으면 `secrets.local.json` 의 `nas` 자격으로 `net use` 한 번 시도) > `data/review/`.
+  저장 루트 판단은 프로세스당 한 번 하고 기억한다. NAS 가 안 닿는 PC 에서는 SMB 확인이 20초씩 걸려 렌더마다 멈췄었다(2026-09-27).
+  445 포트 TCP 확인(2초)으로 먼저 거르고, 로컬 폴백으로 정해진 뒤엔 5분마다 뒤에서만 다시 본다. 사이드바 `NAS 다시 연결` 은 즉시 재확인.
 - **로그인** 첫 화면에서 ID/비밀번호. 계정은 `config/users.local.json`(gitignore)에 PBKDF2 해시로 저장.
   ```powershell
   scripts\review user add admin        # 비밀번호 프롬프트
@@ -247,8 +250,19 @@ scripts\perf_app.bat          # cmd
 흐름: **현장 선택 → 월 선택 (처음이면 표본 만들기) → 채점 → 리포트**
 
 - **월 선택** 월별 표에 상태(표본 없음/미검수/진행 중/완료) · 채점 수 · 제외 · 정확도 · 모델. 행 클릭으로 선택, 더블클릭으로 열기.
-- **표본 만들기** 그 달 이벤트 중 판정 연동·세 클래스 점수·영상이 모두 있는 것이 후보. BCT 별로 시드 고정 셔플해 앞에서 N건(후보가 적으면 전부).
+- **표본 만들기** 그 달 이벤트 중 판정 연동·세 클래스 점수·영상이 모두 있는 것이 후보. **층화 추출** (2026-09-27):
+  BCT 마다 N건을 **시스템 승인/거부 반반**(100 → 50·50)으로 뽑되, 한쪽이 모자라면 그쪽은 전부 넣고 나머지를 다른 쪽에서 채운다
+  (단양처럼 승인이 적은 곳은 승인 전부 + 거부). 승인·거부 각각 안에서는 **일자 → 시간대(2시간)** 를 번갈아 골라 특정 날짜·시간대에
+  쏠리지 않는다(건수가 많은 날도 같은 몫). 시드로 재현되고, `제외` 보충은 같은 BCT·같은 판정의 다음 후보.
   한 달치 수집은 수십 초(9월 1~14일 9,510건 12초). 모델 버전 칸에는 현재 탐지 모델 이름이 기본으로 들어가고, 리포트·비교에 쓰인다.
+  CLI 로도 같은 표본을 만든다 (매월 한 번, 모든 현장):
+  ```powershell
+  scripts\review perf make all 2026-09          # 현장 전부 (또는 HANIL / DANYANG). --per-bct 100 --seed N --force
+  scripts\review perf show all 2026-09          # BCT 별 승인/거부·날짜·시간대 분포와 채점 진행
+  scripts\review perf report HANIL 2026-09      # 채점 뒤 리포트 (HTML·PDF·CSV). --base 2026-08 로 전월 비교
+  scripts\review perf combined all 2026-09     # 모든 현장 통합 보고서 PDF 한 부 → data/_reports/perf_2026-09/report.pdf
+  scripts\review perf retrain all 2026-09      # 오탐·미탐 이벤트의 추가 학습용 클립 목록 (retrain_clips.json)
+  ```
 - **채점 (2×2)** 타일마다 `틀린 항목  안전모 · 하네스 · 안전고리 · 제외` 칩. **모델 판정이 틀린 항목만** 누르고 `P`(저장 · 다음 4개), `Z` 되돌리기(묶음 단위).
   아무것도 안 누르면 세 항목 모두 맞음. `제외` = 판단 불가(사람 안 보임·영상 깨짐) → 집계에서 빠지고 같은 BCT 의 다음 무작위 후보가 대기열 끝에 자동 보충.
   타일 색: 미검수 하늘색 · 미검수 거부 노랑 · 틀림 표시 빨강 · 제외 회색 · 저장된 것은 결과색.
