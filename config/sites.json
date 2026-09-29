@@ -57,6 +57,51 @@
         "bct12": "edge-node2/gate2",
         "bct13": "edge-node1/gate1"
       }
+    },
+    {
+      "code": "DANYANG",
+      "name": "한일시멘트 단양",
+      "cameras": [
+        "hook",
+        "ppe"
+      ],
+      "access": "direct",
+      "_access_note": "direct = 단양 엣지노드1(대시보드 PC) ZeroTier IP 로 :9000/:8086 직접. 엣지 앱과 MinIO·Influx·대시보드가 한 장비(172.19.5.216)에 있다.",
+      "server": {
+        "lan_ip": "172.19.5.216",
+        "zerotier_ip": "10.113.93.185",
+        "minio_port": 9000,
+        "influx_port": 8086
+      },
+      "tunnel": {
+        "jump_host": "10.113.93.185",
+        "ssh_user": "paimedialab",
+        "ssh_key": "~/.ssh/bct_edge",
+        "ssh_port": 22,
+        "local_minio_port": 19000,
+        "local_influx_port": 18086
+      },
+      "minio": {
+        "bucket": "bct-clips",
+        "secure": false,
+        "tg_prefix": "_tg/"
+      },
+      "influx": {
+        "org": "mithril",
+        "bucket": "gate_events",
+        "measurement": "gate_event",
+        "join_tolerance_sec": 90
+      },
+      "thresholds": {
+        "_note": "영월 값을 복사. 단양 compose.yml 의 HOOK/HELMET/HARNESS_CONF_THRESHOLD 와 맞출 것 (미확인).",
+        "hook_score": 0.5,
+        "helmet_score": 0.45,
+        "harness_score": 0.5
+      },
+      "bcts": {
+        "bct6": "edge-node1/gate1",
+        "bct7": "edge-node1/gate2"
+      }
     }
   ]
 }
