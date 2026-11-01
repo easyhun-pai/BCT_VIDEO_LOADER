@@ -184,8 +184,8 @@ report SITE FROM TO                                       기간 출입 통계 �
 models SITE · sync [SITE] · user add|list|del             모델 정보 · NAS 반영 · 계정
 perf make|show SITE|all MONTH                             월간 표본 만들기 · 분포 확인
 perf report SITE MONTH                                    현장 단위 성능 리포트
-perf combined all MONTH                                   통합 보고서 PDF
-perf retrain all MONTH                                    추가 학습용 오탐 · 미탐 클립 목록
+perf combined SITE|all MONTH                              현장별(2026-10~) 또는 통합 보고서 PDF
+perf retrain SITE|all MONTH                               추가 학습용 오탐 · 미탐 클립 목록
 ```
 
 실행은 `scripts\review <명령>` 또는 `.venv\Scripts\python.exe -m review <명령>`.

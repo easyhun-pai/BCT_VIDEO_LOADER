@@ -5,6 +5,7 @@
     부록  검수한 이벤트 전체 목록 (클립 · 시스템/실제 판정 · 항목별 결과 · 오탐/미탐) · 제외 목록
 
 python -m review perf combined all 2026-09 [--out-dir data/_reports/perf_2026-09]
+python -m review perf combined HANIL 2026-10      현장 하나만 (통합 구간 없음) → data/_reports/perf_2026-10/HANIL/
 산출: report.pdf · report.html · graded_all.csv · summary.json (+ 차트 PNG)
 
 python -m review perf retrain all 2026-09
@@ -27,10 +28,12 @@ VK = {"allowed": "승인", "denied": "거부"}
 # ══════════════════════════════════════════════════════════════════════════
 # 집계
 # ══════════════════════════════════════════════════════════════════════════
-def load_sites(settings, root: Path, month: str) -> list[dict]:
-    """표본이 있는 현장마다 {site, store, rows(채점 유효), excluded}."""
+def load_sites(settings, root: Path, month: str, codes: list[str] | None = None) -> list[dict]:
+    """표본이 있는 현장마다 {site, store, rows(채점 유효), excluded}. codes 를 주면 그 현장만."""
     out = []
     for site in settings.sites.values():
+        if codes and site.code not in codes:
+            continue
         if not PerfStore.exists(root, site.code, month):
             continue
         store = PerfStore.open(root, site.code, month)
@@ -66,13 +69,16 @@ def _bct_sort_key(label: str):
 def build_summary(sites: list[dict], month: str) -> dict:
     all_rows = [r for s in sites for r in s["rows"]]
     name_of = {s["site"].code: s["site"].name for s in sites}
-    sections = [section("통합", all_rows, lambda r: f"{name_of[r['site']].split()[-1]} {r['bct'].upper()}")]
+    sections = []
+    if len(sites) > 1:                       # 현장 하나만 내면 통합 구간 없이 그 현장만
+        sections.append(section("통합", all_rows, lambda r: f"{name_of[r['site']].split()[-1]} {r['bct'].upper()}"))
     for s in sites:
         sections.append(section(s["site"].name, s["rows"], lambda r: r["bct"].upper()))
     order = {name.split()[-1]: i for i, name in enumerate(name_of.values())}       # 통합 라벨 "영월 BCT4" → 현장 등록 순
     for sec in sections:
         sec["per_bct"].sort(key=lambda b: (order.get(_bct_sort_key(b["bct"])[0], 0), _bct_sort_key(b["bct"])[1]))
-    sections[0]["chart_opts"] = {"figsize": (9, 3.8), "rotate": 35, "fontsize": 8.5}
+    if len(sites) > 1:
+        sections[0]["chart_opts"] = {"figsize": (9, 3.8), "rotate": 35, "fontsize": 8.5}
     meta = {
         "month": month,
         "sites": [{"code": s["site"].code, "name": s["site"].name, "bcts": sorted(s["store"].pool["bcts"], key=_bct_key),
@@ -81,6 +87,7 @@ def build_summary(sites: list[dict], month: str) -> dict:
                    "per_bct": s["store"].pool["per_bct"], "seed": s["store"].pool["seed"],
                    "thresholds": s["store"].pool["thresholds"], "model": s["store"].data.get("model", ""),
                    "n": len(s["rows"]), "excluded": len(s["excluded"]), "sampling": s["store"].pool.get("sampling"),
+                   "imported": s["store"].pool.get("imported"),
                    "days": sorted({r["date"] for r in s["rows"]})} for s in sites],
         "reviewers": sorted({r["by"] for r in all_rows if r["by"]}),
         "graded_from": min(r["at"] for r in all_rows)[:16].replace("T", " ") if all_rows else "",
@@ -190,7 +197,13 @@ def _env_table(meta: dict) -> str:
         else f"{s['name']} {s['bcts'][0].upper()}" for s in sites)
     days = sorted({d for s in sites for d in s["days"]})
     ev_line = " · ".join(f"{s['name']} {_n(s['events'])}건 (후보 {_n(s['eligible'])})" for s in sites)
-    samp = " · ".join(f"{s['name']} {_n(s['n'])}건" for s in sites)
+    def _samp(s):                            # 다른 도구로 채점한 표본을 가져온 현장은 실제 표본 구성 그대로 적는다
+        imp = s.get("imported")
+        if not imp:
+            return f"{s['name']} {_n(s['n'])}건"
+        return (f"{s['name']} {_n(s['n'])}건 (기존 검수 표본 {_n(imp['rows'])}건(BCT 당 승인·거부 반반)을 그대로 쓰고 "
+                f"판단 불가 자리 {_n(s['per_bct'] * len(s['bcts']) - imp['rows'])}건만 위 규칙으로 보충)")
+    samp = " · ".join(_samp(s) for s in sites)
     th = sites[0]["thresholds"] if sites else {}
     same_th = all(s["thresholds"] == th for s in sites)
     th_line = (f"안전모 {th.get('helmet_score')} · 하네스 {th.get('harness_score')} · 안전고리 {th.get('hook_score')}"
@@ -281,8 +294,8 @@ def make_html(summary: dict, sites: list[dict], charts: dict[str, dict[str, Path
     return p
 
 
-def build(settings, root: Path, month: str, out: Path) -> tuple[Path, Path | None, dict]:
-    sites = load_sites(settings, root, month)
+def build(settings, root: Path, month: str, out: Path, codes: list[str] | None = None) -> tuple[Path, Path | None, dict]:
+    sites = load_sites(settings, root, month, codes)
     if not sites:
         raise SystemExit(f"{month}: 표본이 있는 현장이 없습니다 ({root})")
     summary = build_summary(sites, month)
@@ -313,9 +326,9 @@ ROLE_OF = {"hook": "hook", "helmet": "ppe", "harness": "ppe"}      # 틀린 항�
 BS = chr(92)
 
 
-def build_retrain_list(settings, root: Path, month: str, out: Path) -> tuple[Path, Path, dict]:
+def build_retrain_list(settings, root: Path, month: str, out: Path, codes: list[str] | None = None) -> tuple[Path, Path, dict]:
     """항목이 하나라도 틀린 이벤트를 모아 retrain_clips.json 과 retrain_event_ids.txt 를 쓴다."""
-    sites = load_sites(settings, root, month)
+    sites = load_sites(settings, root, month, codes)
     if not sites:
         raise SystemExit(f"{month}: 표본이 있는 현장이 없습니다 ({root})")
     items, per_site = [], {}

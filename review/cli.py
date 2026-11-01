@@ -13,7 +13,7 @@
   perf make SITE|all MONTH       월간 성능 검수 표본 만들기 (BCT 당 N건, 승인/거부 반반 + 일자·시간대 분산). 채점은 웹 :8502
   perf show SITE|all MONTH       표본 분포·진행 상황
   perf report SITE MONTH         채점 결과 리포트 (HTML·PDF·CSV) — 웹의 '리포트 만들기'와 같음
-  perf combined all MONTH        모든 현장을 합친 통합 리포트 PDF 한 부 (1장 환경·기준·종합 → 통합/현장별 상세 → 이벤트 목록)
+  perf combined SITE|all MONTH   현장 하나(SITE) 또는 모든 현장을 합친(all) 리포트 PDF 한 부
   perf retrain all MONTH         오탐·미탐 이벤트의 추가 학습용 클립 목록 (retrain_clips.json · retrain_event_ids.txt)
 """
 from __future__ import annotations
@@ -435,10 +435,12 @@ def cmd_perf(a, st):
                   f" · 시드 {store.pool['seed']} · 모델 '{store.data.get('model', '')}'")
             print(_perf_dist_table(store.pool, store.queue)); print()
         return 0
+    codes = None if a.site.lower() == "all" else [st.site(a.site).code]
+    out_default = Path(cfgmod.ROOT) / "data" / "_reports" / f"perf_{a.month}" / (codes[0] if codes else "")
     if a.action == "combined":
         from . import perf_combined
-        out = Path(a.out_dir) if a.out_dir else Path(cfgmod.ROOT) / "data" / "_reports" / f"perf_{a.month}"
-        html, pdf, summary = perf_combined.build(st, root, a.month, out)
+        out = Path(a.out_dir) if a.out_dir else out_default
+        html, pdf, summary = perf_combined.build(st, root, a.month, out, codes)
         for sec in summary["sections"]:
             o = sec["overview"]
             print(f"{sec['name']:8} 표본 {o['n']:5} · 출입 판정 정확도 {o['accuracy']}% (CI {o['ci']}) · 부당 거부 {o['wrong_deny']} · 부당 승인 {o['wrong_allow']}")
@@ -446,8 +448,8 @@ def cmd_perf(a, st):
         return 0
     if a.action == "retrain":
         from . import perf_combined
-        out = Path(a.out_dir) if a.out_dir else Path(cfgmod.ROOT) / "data" / "_reports" / f"perf_{a.month}"
-        pj, pi, sm = perf_combined.build_retrain_list(st, root, a.month, out)
+        out = Path(a.out_dir) if a.out_dir else out_default
+        pj, pi, sm = perf_combined.build_retrain_list(st, root, a.month, out, codes)
         print(f"오탐·미탐 이벤트 {sm['total_events']}건 · 받을 클립 {sm['total_clips_to_fetch']}개")
         for code, v in sm["by_site"].items():
             print(f"  {code:8} {v['events']:3}건 (오탐 {v['fp_events']} · 미탐 {v['fn_events']})")
@@ -528,7 +530,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(fn=cmd_sync)
 
     q = sp.add_parser("perf", help="월간 성능 검수 표본 (make|show|report) — 채점은 웹 :8502")
-    q.add_argument("action", choices=["make", "show", "report", "combined", "retrain"]); q.add_argument("site", help="현장 코드 또는 all (combined 는 all)")
+    q.add_argument("action", choices=["make", "show", "report", "combined", "retrain"]); q.add_argument("site", help="현장 코드 또는 all")
     q.add_argument("month", help="YYYY-MM")
     q.add_argument("--per-bct", type=int, default=100, help="BCT 당 표본 수 (기본 100 = 승인 50 · 거부 50)")
     q.add_argument("--seed", type=int, help="재현용 시드 (생략 시 무작위)")
