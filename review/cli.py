@@ -12,6 +12,7 @@
   sync [SITE] [--dry-run]        오탐 영상 NAS 반영 (오탐 항목: 안전고리→hook, 안전모·하네스→ppe)
   perf make SITE|all MONTH       월간 성능 검수 표본 만들기 (BCT 당 N건, 승인/거부 반반 + 일자·시간대 분산). 채점은 웹 :8502
   perf show SITE|all MONTH       표본 분포·진행 상황
+  perf extend SITE|all MONTH --per-bct 200   채점은 그대로 두고 BCT 당 표본을 늘림 (층화 순서를 이어서)
   perf report SITE MONTH         채점 결과 리포트 (HTML·PDF·CSV) — 웹의 '리포트 만들기'와 같음
   perf combined SITE|all MONTH   현장 하나(SITE) 또는 모든 현장을 합친(all) 리포트 PDF 한 부
   perf retrain all MONTH         오탐·미탐 이벤트의 추가 학습용 클립 목록 (retrain_clips.json · retrain_event_ids.txt)
@@ -435,6 +436,17 @@ def cmd_perf(a, st):
                   f" · 시드 {store.pool['seed']} · 모델 '{store.data.get('model', '')}'")
             print(_perf_dist_table(store.pool, store.queue)); print()
         return 0
+    if a.action == "extend":
+        for site in _perf_sites(st, a.site):
+            if not PerfStore.exists(root, site.code, a.month):
+                print(f"{site.code} {a.month}: 표본 없음"); continue
+            store = PerfStore.open(root, site.code, a.month)
+            old = store.pool["per_bct"]
+            added = store.extend(a.per_bct)
+            print(f"{site.code} {a.month}: BCT 당 {old} → {a.per_bct} · 추가 {sum(v['allowed'] + v['denied'] for v in added.values())}건 "
+                  "(" + " · ".join(f"{b} +{v['allowed']}/{v['denied']}" for b, v in added.items()) + ")")
+            print(_perf_dist_table(store.pool, store.queue)); print()
+        return 0
     codes = None if a.site.lower() == "all" else [st.site(a.site).code]
     out_default = Path(cfgmod.ROOT) / "data" / "_reports" / f"perf_{a.month}" / (codes[0] if codes else "")
     if a.action == "combined":
@@ -530,9 +542,9 @@ def build_parser() -> argparse.ArgumentParser:
     q.set_defaults(fn=cmd_sync)
 
     q = sp.add_parser("perf", help="월간 성능 검수 표본 (make|show|report) — 채점은 웹 :8502")
-    q.add_argument("action", choices=["make", "show", "report", "combined", "retrain"]); q.add_argument("site", help="현장 코드 또는 all")
+    q.add_argument("action", choices=["make", "show", "extend", "report", "combined", "retrain"]); q.add_argument("site", help="현장 코드 또는 all")
     q.add_argument("month", help="YYYY-MM")
-    q.add_argument("--per-bct", type=int, default=100, help="BCT 당 표본 수 (기본 100 = 승인 50 · 거부 50)")
+    q.add_argument("--per-bct", type=int, default=200, help="BCT 당 표본 수 (기본 200 = 승인 100 · 거부 100). extend: 늘릴 목표")
     q.add_argument("--seed", type=int, help="재현용 시드 (생략 시 무작위)")
     q.add_argument("--model", help="모델 버전 표시 (생략 시 저장된 모델 정보)")
     q.add_argument("--by", default="cli", help="표본 생성자 (기본 cli)")

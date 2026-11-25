@@ -35,7 +35,7 @@ from pathlib import Path
 
 CLASS_KEYS = ("helmet", "harness", "hook")
 CLASS_KO = {"helmet": "안전모", "harness": "하네스", "hook": "안전고리"}
-DEFAULT_PER_BCT = 100
+DEFAULT_PER_BCT = 200                         # 2026-10 부터 BCT 당 200 (이전 100)
 
 
 def _now() -> str:
@@ -340,6 +340,42 @@ class PerfStore:
                 if nid:
                     self.queue.append(nid); added.append(nid)
         self.data["history"].append({"ids": list(batch), "prev": prev, "added": added, "at": now})
+        self.save()
+        return added
+
+    def extend(self, per_bct: int) -> dict[str, dict]:
+        """채점한 표본은 그대로 두고 BCT 당 목표를 per_bct 로 늘린다. 반환: BCT 별 추가 건수 {allowed, denied}.
+
+        목표를 새 N 으로 다시 반반 나누고, 대기열에 있는 유효(제외 아님) 건을 뺀 만큼 pool 순서대로 판정별로 더한다.
+        pool 순서가 층화 라운드로빈이므로 추가분도 일자 → 시간대로 고르게 이어진다. 한쪽 후보가 모자라면 다른 쪽에서.
+        """
+        self.refresh()
+        old = int(self.pool["per_bct"])
+        if per_bct <= old:
+            raise ValueError(f"지금 목표 {old} 보다 커야 합니다")
+        inq = set(self.queue)
+        added: dict[str, dict] = {}
+        new_ids = []
+        for bct, rows in self.pool["bcts"].items():
+            live = [self.rows[e] for e in self.queue if self.rows[e]["bct"] == bct and not (self.judgment(e) or {}).get("excluded")]
+            ca = sum(1 for r in rows if r["verdict"] == "allowed")
+            ta, td = _split_target(ca, len(rows) - ca, per_bct)
+            need = {"allowed": max(0, ta - sum(1 for r in live if r["verdict"] == "allowed")),
+                    "denied": max(0, td - sum(1 for r in live if r["verdict"] == "denied"))}
+            rest = [r for r in rows if r["id"] not in inq]
+            pick = [r for v, k in need.items() for r in [x for x in rest if x["verdict"] == v][:k]]
+            short = sum(need.values()) - len(pick)              # 제외로 후보를 써서 한쪽이 모자라면 다른 쪽에서
+            if short > 0:
+                got = {r["id"] for r in pick}
+                pick += [r for r in rest if r["id"] not in got][:short]
+            added[bct] = {"allowed": sum(1 for r in pick if r["verdict"] == "allowed"),
+                          "denied": sum(1 for r in pick if r["verdict"] == "denied")}
+            new_ids += pick
+        new_ids.sort(key=lambda r: (r["ts"], _bct_key(r["bct"])))
+        self.queue.extend(r["id"] for r in new_ids)
+        self.pool["per_bct"] = per_bct
+        self.pool.setdefault("extended", []).append({"from": old, "to": per_bct, "at": _now(), "added": added})
+        _atomic_write(self.dir / "pool.json", self.pool, compact=True)
         self.save()
         return added
 

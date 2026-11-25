@@ -43,6 +43,30 @@ logs/                   실행 로그 (gitignore)
 ZeroTier로는 닿지 않는다. 영상은 카메라가 아니라 엣지노드 디스크에 저장되므로 노드에만
 접속하면 된다.
 
+## 다른 PC 에서 검수 웹 띄우기
+
+코드만 git 으로 받고, 자격 파일 두 개는 손으로 옮긴다. 채점 기록은 NAS 에 있으니 따로 옮길 것이 없다.
+
+1. 준비물: Python 3.11, Git, Chrome 또는 Edge(PDF), ffmpeg(영상 변환, `winget install Gyan.FFmpeg`).
+   ZeroTier 는 같은 네트워크(`10.113.x`)에 붙어 있어야 한다.
+2. 받기 · 설치
+
+   ```powershell
+   git clone https://github.com/easyhun-pai/BCT_VIDEO_LOADER.git
+   cd BCT_VIDEO_LOADER
+   python -m venv .venv; .venv\Scripts\pip install -r requirements.txt
+   ```
+
+   이후 갱신은 `git pull` 만 하면 된다.
+3. 자격 파일: 기존 PC 의 `config\secrets.local.json` · `config\users.local.json` 을 같은 위치로 복사한다
+   (git 에 없다). 없으면 `secrets.example.json` 을 복사해 채우고, 계정은 `scripts\review user add <id>` 로 만든다.
+4. 확인: `scripts\review days HANIL --month 2026-10` 이 일자 목록을 내면 현장 연결 정상.
+   사무실 LAN 이면 저장 루트가 NAS 로 잡힌다(`perf show` 첫 줄에 `(NAS)`).
+5. 실행: `.\scripts\perf_app.ps1` (월간 성능 검수 :8502), `.\scripts\review_app.ps1` (오탐 검수 :8501).
+
+두 PC 가 같은 NAS 를 쓰면 채점 기록이 합쳐진다(저장 직전에 최신 기록을 다시 읽음). NAS 가 안 닿는 곳(사무실 밖)에서
+채점하면 기록이 그 PC 의 `data\review\_perf` 에만 남으니, 사무실에서 NAS 로 옮겨 합쳐야 한다.
+
 ## 준비
 
 1. `secrets.example.json` 을 `secrets.local.json` 으로 복사하고 계정·비밀번호·봇토큰 입력.

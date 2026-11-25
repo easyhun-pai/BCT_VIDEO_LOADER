@@ -202,7 +202,7 @@ def _env_table(meta: dict) -> str:
         if not imp:
             return f"{s['name']} {_n(s['n'])}건"
         return (f"{s['name']} {_n(s['n'])}건 (기존 검수 표본 {_n(imp['rows'])}건(BCT 당 승인·거부 반반)을 그대로 쓰고 "
-                f"판단 불가 자리 {_n(s['per_bct'] * len(s['bcts']) - imp['rows'])}건만 위 규칙으로 보충)")
+                f"나머지 {_n(s['n'] - imp['rows'])}건은 위 규칙으로 추출·보충)")
     samp = " · ".join(_samp(s) for s in sites)
     th = sites[0]["thresholds"] if sites else {}
     same_th = all(s["thresholds"] == th for s in sites)

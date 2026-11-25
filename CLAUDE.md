@@ -59,7 +59,7 @@
 
 ### 4. 월간 성능 검수 웹 (`:8502`)
 
-BCT 당 100건 표본을 사람이 채점해 정확도 · 오탐율을 낸다.
+BCT 당 200건 표본(2026-10 부터, 이전 100건)을 사람이 채점해 정확도 · 오탐율을 낸다.
 
 | 파일 | 역할 |
 |---|---|
@@ -73,6 +73,8 @@ BCT 당 100건 표본을 사람이 채점해 정확도 · 오탐율을 낸다.
 - 승인 · 거부 각각 안에서 일자 → 시간대(2시간) 라운드로빈. 건수가 많은 날도 같은 몫.
 - `pool.json` 의 BCT 별 순서 = [승인 표본][거부 표본][보충 순서]. 시드로 재현.
 - `제외`(판단 불가)는 같은 BCT · 같은 판정의 다음 후보로 자동 보충.
+- 표본을 늘릴 때는 `perf extend` (채점 유지, pool 순서를 이어서 판정별로 추가). 다시 만들지 않는다.
+- 제외는 판단 불가(사람 안 보임 · 영상 손상)만. 모델이 틀린 표본을 빼거나 바꿔 정확도를 맞추지 않는다.
 
 **채점 규칙**
 - 검수자는 모델 판정이 **틀린 항목만** 표시한다. 표시 안 한 항목은 모델이 맞은 것.
@@ -116,7 +118,7 @@ BCT 당 100건 표본을 사람이 채점해 정확도 · 오탐율을 낸다.
 매월 초, 지난 달을 대상으로 한다. `<YYYY-MM>` 만 바꾸면 된다.
 
 ```powershell
-# 1. 표본 만들기 (모든 현장, BCT 당 100건 층화 추출)
+# 1. 표본 만들기 (모든 현장, BCT 당 200건 층화 추출)
 scripts\review perf make all 2026-09
 scripts\review perf show all 2026-09          # 승인/거부 · 날짜 · 시간대 분포 확인
 
@@ -183,6 +185,7 @@ sites · days · list · check-influx · resolve · fetch      이벤트 조회 
 report SITE FROM TO                                       기간 출입 통계 리포트
 models SITE · sync [SITE] · user add|list|del             모델 정보 · NAS 반영 · 계정
 perf make|show SITE|all MONTH                             월간 표본 만들기 · 분포 확인
+perf extend SITE|all MONTH --per-bct 200                  채점 유지한 채 BCT 당 표본 늘리기
 perf report SITE MONTH                                    현장 단위 성능 리포트
 perf combined SITE|all MONTH                              현장별(2026-10~) 또는 통합 보고서 PDF
 perf retrain SITE|all MONTH                               추가 학습용 오탐 · 미탐 클립 목록
